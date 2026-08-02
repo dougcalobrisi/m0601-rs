@@ -1,0 +1,99 @@
+//! `raw` — send an arbitrary frame (9 bytes = CRC auto-added, or 10).
+
+use std::process::ExitCode;
+use std::time::Duration;
+
+use m0601::M0601;
+use m0601::protocol::{Frame, frame_from_bytes, parse_feedback};
+
+/// Tokenize `"01 74,00 ..."` (spaces and/or commas, optional `0x` prefixes)
+/// into a frame; the library appends the CRC when 9 bytes are given and
+/// enforces the length rule.
+fn parse_hex_frame(input: &str) -> Result<Frame, String> {
+    let mut bytes = Vec::new();
+    for tok in input.replace(',', " ").split_whitespace() {
+        let tok = tok
+            .strip_prefix("0x")
+            .or_else(|| tok.strip_prefix("0X"))
+            .unwrap_or(tok);
+        let b = u8::from_str_radix(tok, 16).map_err(|e| format!("bad hex byte {tok:?}: {e}"))?;
+        bytes.push(b);
+    }
+    frame_from_bytes(&bytes).map_err(|e| format!("{e}. Provide 9 bytes (CRC auto-added) or 10."))
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn run(port: &str, id: u8, timeout: Duration, hex: &str) -> m0601::Result<ExitCode> {
+    let frame = match parse_hex_frame(hex) {
+        Ok(f) => f,
+        Err(msg) => {
+            println!("[x] {msg}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    let mut motor = M0601::open(port, id, timeout)?;
+    println!("TX: {}", hex_upper(&frame));
+    let resp = motor.send_raw(&frame, timeout.max(Duration::from_millis(200)))?;
+    if resp.is_empty() {
+        println!("RX: (no response)");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("RX: {}", hex_upper(&resp));
+    if let Some(fb) = parse_feedback(&resp) {
+        println!(
+            "    decoded -> mode {}, {} RPM, {:.3} A, {:.1} deg, temp {}C, err {}",
+            fb.mode_name(),
+            fb.speed_rpm,
+            fb.current_a,
+            fb.position_deg,
+            fb.temp_c,
+            fb.faults
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex_frame;
+
+    #[test]
+    fn nine_bytes_get_crc_appended() {
+        let f = parse_hex_frame("01 74 00 00 00 00 00 00 00").unwrap();
+        assert_eq!(f, [0x01, 0x74, 0, 0, 0, 0, 0, 0, 0, 0x04]);
+    }
+
+    #[test]
+    fn ten_bytes_pass_through() {
+        let f = parse_hex_frame("01 74 00 00 00 00 00 00 00 FF").unwrap();
+        assert_eq!(f[9], 0xFF); // not recomputed
+    }
+
+    #[test]
+    fn commas_and_prefixes_accepted() {
+        let f = parse_hex_frame("0x01,0x74, 00 00 00 00 00 00 00").unwrap();
+        assert_eq!(f.len(), 10);
+        assert_eq!(f[0], 0x01);
+    }
+
+    #[test]
+    fn wrong_length_rejected() {
+        assert!(parse_hex_frame("01 74").is_err());
+        assert!(parse_hex_frame("").is_err());
+        assert!(parse_hex_frame("01 02 03 04 05 06 07 08 09 0A 0B").is_err());
+    }
+
+    #[test]
+    fn bad_hex_rejected() {
+        assert!(parse_hex_frame("01 74 00 00 00 00 00 00 GG").is_err());
+    }
+}

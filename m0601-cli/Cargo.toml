@@ -1,0 +1,24 @@
+[package]
+name = "m0601-cli"
+description = "Control tool for the DFRobot M0601 (FIT1042) hub motor over RS485"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "m0601"
+path = "src/main.rs"
+# The binary shares its name with the library crate; docs for the CLI live
+# in --help and README, so skip rustdoc to avoid the output-path collision.
+doc = false
+
+[dependencies]
+m0601 = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+ctrlc = { workspace = true }
+jiff = { workspace = true }
+
+[lints]
+workspace = true

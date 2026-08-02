@@ -1,0 +1,16 @@
+[package]
+name = "m0601"
+description = "Driver for the DFRobot M0601 (FIT1042) direct-drive hub motor over RS485"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# default-features = false skips libudev (only needed for port enumeration,
+# which this driver never does — it always opens a named port).
+serialport = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

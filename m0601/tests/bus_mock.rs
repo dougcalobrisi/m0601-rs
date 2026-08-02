@@ -1,0 +1,422 @@
+//! Driver-behavior tests against [`MockTransport`] — no hardware, no timing.
+
+// Test helpers may assert; the workspace no-panic lints target library code.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::time::Duration;
+
+use m0601::protocol::{frame_brake, frame_feedback, frame_id_query, frame_mode, frame_velocity};
+use m0601::{Bus, Error, M0601, MockTransport, Mode};
+
+const TIMEOUT: Duration = Duration::from_millis(150);
+
+fn motor(mock: MockTransport) -> M0601<MockTransport> {
+    M0601::with_transport(mock, 0x01, TIMEOUT).expect("valid id")
+}
+
+/// A plausible telemetry reply from motor `id`: 100 RPM, 40 °C, no faults.
+fn telemetry(id: u8) -> Vec<u8> {
+    vec![id, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00, 0x00]
+}
+
+#[test]
+fn invalid_ids_rejected_at_construction() {
+    assert!(matches!(
+        M0601::with_transport(MockTransport::default(), 0x00, TIMEOUT),
+        Err(Error::InvalidId(0x00))
+    ));
+    assert!(matches!(
+        Bus::with_transport(MockTransport::default(), TIMEOUT).motor(0xFF),
+        Err(Error::InvalidId(0xFF))
+    ));
+}
+
+#[test]
+fn query_happy_path() {
+    let mut m = motor(MockTransport::with_replies([telemetry(0x01)]));
+    let fb = m.query().unwrap().expect("telemetry parsed");
+    assert_eq!(fb.speed_rpm, 100);
+    assert_eq!(fb.temp_c, 40);
+    // Exactly one frame went out: the feedback query.
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent, vec![frame_feedback(0x01).to_vec()]);
+}
+
+#[test]
+fn query_silence_is_ok_none_not_error() {
+    let mut m = motor(MockTransport::default());
+    assert!(m.query().unwrap().is_none());
+}
+
+#[test]
+fn query_strips_half_duplex_echo() {
+    // Reply arrives as <tx echo><telemetry>.
+    let mut m = motor(MockTransport {
+        echo_tx: true,
+        ..MockTransport::with_replies([telemetry(0x01)])
+    });
+    let fb = m.query().unwrap().expect("echo stripped, telemetry parsed");
+    assert_eq!(fb.speed_rpm, 100);
+    assert_eq!(fb.id, 0x01);
+}
+
+#[test]
+fn query_pure_echo_is_none() {
+    // Adapter echoes the TX but no motor answers. The echo is a full 10
+    // bytes and starts with the motor's own ID, so a naive parser would
+    // report it as telemetry; the echo prefix is stripped and the empty
+    // remainder yields None.
+    let mut m = motor(MockTransport {
+        echo_tx: true,
+        ..MockTransport::default()
+    });
+    assert!(m.query().unwrap().is_none());
+}
+
+#[test]
+fn query_rejects_reply_from_a_different_motor() {
+    // On a shared bus, another motor's frame — stale in the adapter buffer,
+    // or a late answer landing in this transaction's window — must never be
+    // handed back as this motor's telemetry.
+    let mut m = motor(MockTransport::with_replies([telemetry(0x02)]));
+    assert!(
+        m.query().unwrap().is_none(),
+        "motor 0x01 must not accept 0x02's telemetry"
+    );
+}
+
+#[test]
+fn query_accepts_only_its_own_id_on_a_shared_bus() {
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([telemetry(0x02), telemetry(0x01)]),
+        TIMEOUT,
+    );
+    let mut one = bus.motor(0x01).unwrap();
+    // First reply belongs to 0x02 and is dropped; the second is ours.
+    assert!(one.query().unwrap().is_none());
+    assert_eq!(one.query().unwrap().expect("own telemetry").id, 0x01);
+}
+
+#[test]
+fn query_ignores_partial_echo_rather_than_parsing_it() {
+    // A half-buffered echo can't be matched by strip_prefix. The remaining
+    // bytes are the tail of our own query frame, not telemetry — and its
+    // byte 0 is not the motor ID, so the ID check rejects it.
+    let mut m = motor(MockTransport {
+        echo_tx: true,
+        echo_truncate: Some(4),
+        ..MockTransport::default()
+    });
+    assert!(m.query().unwrap().is_none());
+}
+
+#[test]
+fn query_short_reply_is_none() {
+    // Truncated frame (motor cut off mid-transmission): too short to parse.
+    let mut m = motor(MockTransport::with_replies([vec![0x01, 0x02, 0x00]]));
+    assert!(m.query().unwrap().is_none());
+}
+
+#[test]
+fn set_mode_sends_exactly_five_frames() {
+    let mut m = motor(MockTransport::default());
+    m.set_mode(Mode::Position).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent.len(), 5);
+    for frame in &mock.sent {
+        assert_eq!(frame, &frame_mode(0x01, Mode::Position).to_vec());
+    }
+}
+
+#[test]
+fn scan_broadcast_finds_id() {
+    // Bus answers the broadcast with a frame starting with the motor's ID.
+    let bus = Bus::with_transport(MockTransport::with_replies([telemetry(0x2A)]), TIMEOUT);
+    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+}
+
+#[test]
+fn scan_rejects_own_tx_echo() {
+    // Only the echo of the query comes back — no motor. The query frame
+    // contains 0xC8, which is in the valid ID range; without echo
+    // stripping the scan would "find" motor 0xC8.
+    let bus = Bus::with_transport(
+        MockTransport {
+            echo_tx: true,
+            ..MockTransport::default()
+        },
+        TIMEOUT,
+    );
+    assert_eq!(bus.scan(false, |_| {}).unwrap(), Vec::<u8>::new());
+}
+
+#[test]
+fn scan_ignores_stray_bytes_that_are_not_a_whole_frame() {
+    // A runt burst of line noise in the valid ID range must not be reported
+    // as a motor: discovery walks whole 10-byte frames, not loose bytes.
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([vec![0x2A, 0x2B, 0x2C]]),
+        TIMEOUT,
+    );
+    assert_eq!(bus.scan(false, |_| {}).unwrap(), Vec::<u8>::new());
+}
+
+#[test]
+fn scan_finds_several_motors_answering_back_to_back() {
+    let mut reply = telemetry(0x2A);
+    reply.extend(telemetry(0x05));
+    let bus = Bus::with_transport(MockTransport::with_replies([reply]), TIMEOUT);
+    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x05, 0x2A]);
+}
+
+#[test]
+fn scan_echo_plus_reply_finds_real_id() {
+    let bus = Bus::with_transport(
+        MockTransport {
+            echo_tx: true,
+            ..MockTransport::with_replies([telemetry(0x2A)])
+        },
+        TIMEOUT,
+    );
+    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+}
+
+#[test]
+fn full_scan_probes_all_ids_and_matches_by_reply_id() {
+    // Silent bus except ID 0x10, which answers its own probe.
+    let mut replies: Vec<Vec<u8>> = vec![Vec::new()]; // broadcast: silence
+    for id in 0x01..=0xFEu8 {
+        replies.push(if id == 0x10 {
+            telemetry(0x10)
+        } else {
+            Vec::new()
+        });
+    }
+    let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
+    let mut progress = Vec::new();
+    let found = bus.scan(true, |id| progress.push(id)).unwrap();
+    assert_eq!(found, vec![0x10]);
+    // All 254 IDs probed, in order, each with its own feedback frame.
+    assert_eq!(progress, (0x01..=0xFEu8).collect::<Vec<_>>());
+    let mock = bus.into_transport().expect("no motors minted");
+    assert_eq!(mock.sent.len(), 1 + 254); // broadcast + probes
+    assert_eq!(mock.sent[1], frame_feedback(0x01).to_vec());
+    assert_eq!(mock.sent[254], frame_feedback(0xFE).to_vec());
+}
+
+#[test]
+fn full_scan_ignores_reply_with_wrong_id() {
+    // A reply whose first byte isn't the probed ID (noise/cross-talk) must
+    // not register as a find.
+    let mut replies: Vec<Vec<u8>> = vec![Vec::new()];
+    for id in 0x01..=0xFEu8 {
+        replies.push(if id == 0x10 {
+            telemetry(0x99)
+        } else {
+            Vec::new()
+        });
+    }
+    let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
+    assert_eq!(bus.scan(true, |_| {}).unwrap(), Vec::<u8>::new());
+}
+
+#[test]
+fn set_id_repeats_five_times_then_requeries() {
+    // After the change, the broadcast re-query reports the new ID.
+    let bus = Bus::with_transport(MockTransport::with_replies([telemetry(0x05)]), TIMEOUT);
+    assert_eq!(bus.set_id(0x05).unwrap(), Some(0x05));
+    let mock = bus.into_transport().expect("no motors minted");
+    assert_eq!(mock.sent.len(), 6); // 5× set-ID + 1 broadcast query
+    let set_frame = [0xAA, 0x55, 0x53, 0x05, 0, 0, 0, 0, 0, 0].to_vec();
+    for frame in &mock.sent[..5] {
+        assert_eq!(frame, &set_frame);
+    }
+    assert_eq!(mock.sent[5], frame_id_query().to_vec());
+}
+
+#[test]
+fn set_id_silence_returns_none() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    assert_eq!(bus.set_id(0x05).unwrap(), None);
+}
+
+#[test]
+fn set_id_rejects_invalid_target() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    assert!(matches!(bus.set_id(0x00), Err(Error::InvalidId(0x00))));
+    // Nothing was sent for the invalid request.
+    assert!(bus.into_transport().expect("no motors").sent.is_empty());
+}
+
+#[test]
+fn safe_stop_forces_velocity_mode_before_zeroing() {
+    // A zero-valued drive frame only means "stop" in velocity mode: in
+    // position mode the identical bytes command a move to 0 deg. So the
+    // stop sequence must establish the mode it is about to assume, and the
+    // five mode frames must come FIRST.
+    let mut m = motor(MockTransport::default());
+    m.safe_stop();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent.len(), 15, "5 mode + 5 zero + 5 brake");
+
+    // Expected bytes written out, not recomputed from the code under test.
+    let mode = vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02];
+    let zero = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFB];
+    let brake = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1];
+    assert!(mock.sent[..5].iter().all(|f| *f == mode));
+    assert!(mock.sent[5..10].iter().all(|f| *f == zero));
+    assert!(mock.sent[10..].iter().all(|f| *f == brake));
+}
+
+#[test]
+fn safe_stop_survives_io_failure() {
+    // The shutdown path must not give up on errors: every frame is still
+    // attempted and safe_stop returns normally.
+    let mut m = motor(MockTransport {
+        fail_io: true,
+        ..MockTransport::default()
+    });
+    m.safe_stop(); // must not panic or bail early
+    assert_eq!(m.into_transport().expect("sole handle").sent.len(), 15);
+}
+
+#[test]
+fn drive_frames_are_fire_and_forget() {
+    let mut m = motor(MockTransport::default());
+    m.drive_velocity(250).unwrap();
+    m.brake().unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent.len(), 2);
+    // Literal wire bytes: comparing against frame_velocity() here would
+    // assert the builder against itself and pass even if it were wrong.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x00, 0xFA, 0x00, 0x00, 0x01, 0x00, 0x00, 0x46]
+    );
+    assert_eq!(
+        mock.sent[1],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1]
+    );
+}
+
+#[test]
+fn drive_velocity_clamps_at_the_driver_boundary() {
+    let mut m = motor(MockTransport::default());
+    m.drive_velocity(999).unwrap();
+    m.drive_velocity(-999).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    // 330 and -330 as they appear on the wire, spelled out.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x01, 0x4A, 0x00, 0x00, 0x01, 0x00, 0x00, 0x7C]
+    );
+    assert_eq!(
+        mock.sent[1],
+        vec![0x01, 0x64, 0xFE, 0xB6, 0x00, 0x00, 0x01, 0x00, 0x00, 0x75]
+    );
+}
+
+#[test]
+fn drive_velocity_accel_reaches_the_wire() {
+    let mut m = motor(MockTransport::default());
+    m.drive_velocity_accel(100, 20).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    // Byte 6 carries the acceleration; default drive_velocity would send 1.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x14, 0x00, 0x00, 0x9B]
+    );
+}
+
+// ── Multi-motor bus sharing ─────────────────────────────────────────────────
+
+#[test]
+fn two_motors_share_one_bus() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    let mut left = bus.motor(0x01).unwrap();
+    let mut right = bus.motor(0x02).unwrap();
+
+    left.drive_velocity(100).unwrap();
+    right.drive_velocity(100).unwrap();
+    left.brake().unwrap();
+
+    // All frames went out on the one shared transport, correctly addressed.
+    drop(left);
+    drop(right);
+    let mock = bus.into_transport().expect("all handles dropped");
+    assert_eq!(mock.sent.len(), 3);
+    assert_eq!(mock.sent[0], frame_velocity(0x01, 100, 1).to_vec());
+    assert_eq!(mock.sent[1], frame_velocity(0x02, 100, 1).to_vec());
+    assert_eq!(mock.sent[2], frame_brake(0x01).to_vec());
+}
+
+#[test]
+fn motor_handles_are_cloneable() {
+    let m = motor(MockTransport::default());
+    let mut a = m.clone();
+    let mut b = m;
+    a.drive_velocity(50).unwrap();
+    b.drive_velocity(-50).unwrap();
+    drop(a);
+    let mock = b.into_transport().expect("last handle");
+    assert_eq!(mock.sent.len(), 2);
+}
+
+// ── Mirrored (left/right) wheels ────────────────────────────────────────────
+
+#[test]
+fn mirrored_negates_velocity_and_current_setpoints() {
+    let mut m = motor(MockTransport::default()).mirrored(true);
+    assert!(m.is_mirrored());
+    m.drive_velocity(100).unwrap();
+    m.drive_current(-1234).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    // "+100 forward" goes out as -100 on the mirrored side.
+    assert_eq!(mock.sent[0], frame_velocity(0x01, -100, 1).to_vec());
+    assert_eq!(
+        mock.sent[1],
+        m0601::protocol::frame_current(0x01, 1234).to_vec()
+    );
+}
+
+#[test]
+fn mirrored_flips_telemetry_signs() {
+    // Wire reports +100 RPM; a mirrored handle presents it as -100 so that
+    // "positive = robot forward" holds on both sides.
+    let mut m = motor(MockTransport::with_replies([telemetry(0x01)])).mirrored(true);
+    let fb = m.query().unwrap().expect("telemetry");
+    assert_eq!(fb.speed_rpm, -100);
+    // The raw wire frame is untouched.
+    assert_eq!(fb.raw[4..6], [0x00, 0x64]);
+}
+
+#[test]
+fn mirrored_leaves_position_and_brake_untouched() {
+    let mut m = motor(MockTransport::default()).mirrored(true);
+    m.drive_position(1000).unwrap();
+    m.brake().unwrap();
+    m.safe_stop(); // velocity 0 negates to 0 — sequence identical
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x03, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9F]
+    );
+    assert_eq!(
+        mock.sent[1],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1]
+    );
+    // safe_stop leads with the mode switch, then the (unnegated) zeros.
+    assert_eq!(mock.sent[2], vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
+    assert_eq!(
+        mock.sent[7],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFB]
+    );
+}
+
+#[test]
+fn unmirrored_is_default_and_identity() {
+    let mut m = motor(MockTransport::with_replies([telemetry(0x01)]));
+    assert!(!m.is_mirrored());
+    let fb = m.query().unwrap().expect("telemetry");
+    assert_eq!(fb.speed_rpm, 100);
+}

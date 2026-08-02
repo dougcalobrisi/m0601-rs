@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["m0601", "m0601-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/dougcalobrisi/m0601-rs-test"
+
+[workspace.dependencies]
+m0601 = { path = "m0601" }
+serialport = { version = "4", default-features = false }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+ctrlc = { version = "3", features = ["termination"] }
+jiff = "0.2"
+
+# The library must never panic: a panic in the 50 Hz drive loop means an
+# uncontrolled motor. unwrap/expect/panic are denied workspace-wide.
+#
+# These lints do NOT catch panics inside std — Duration::from_secs_f64 on a
+# non-finite float being the one that bit us — so numeric CLI arguments are
+# validated by clap value_parsers and converted with try_from_secs_f64.
+# Argument errors are clap's own and exit before any port is opened.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+lto = true
+strip = true
