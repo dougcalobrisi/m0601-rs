@@ -24,7 +24,9 @@ fn csv_row(fb: &Feedback) -> String {
         fb.mode_name(),
         fb.speed_rpm,
         fb.current_a,
-        fb.temp_c,
+        // Always present here — monitor only sends 0x74 queries, whose
+        // replies carry the temperature — but never panic on a frame.
+        fb.temp_c.map_or_else(String::new, |t| t.to_string()),
         fb.position_deg,
         fb.faults.0,
         fb.faults,
@@ -71,7 +73,18 @@ pub fn run(
     let mut no_resp = 0u32;
     while running.load(Ordering::Relaxed) {
         let t0 = Instant::now();
-        match motor.query()? {
+        // A transient bus error (USB hiccup) must not kill a long-running
+        // monitor — warn and keep polling, same policy as the control loop.
+        let reading = match motor.query() {
+            Ok(reading) => reading,
+            Err(e) => {
+                print!("\r[!] bus error: {e} — still polling          ");
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(interval);
+                continue;
+            }
+        };
+        match reading {
             None => {
                 no_resp += 1;
                 if no_resp >= 5 {
@@ -88,15 +101,15 @@ pub fn run(
                 } else {
                     format!(" {}", fb.faults)
                 };
+                let temp = fb.temp_c.map_or_else(|| " --".to_owned(), |t| format!("{t:3}"));
                 print!(
                     "\r[{}] #{count:5} | {:<8} | Speed {:+4} RPM | Cur {:+6.3} A | \
-                     Pos {:5.1} | Temp {:3}C | {fault}{trailer}",
+                     Pos {:5.1} | Temp {temp}C | {fault}{trailer}",
                     jiff::Zoned::now().strftime("%H:%M:%S"),
                     fb.mode_name(),
                     fb.speed_rpm,
                     fb.current_a,
                     fb.position_deg,
-                    fb.temp_c,
                 );
                 let _ = std::io::stdout().flush();
                 if let Some(w) = &mut log {

@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::protocol::{
-    self, Frame, frame_brake, frame_current, frame_feedback, frame_id_query, frame_mode,
-    frame_position, frame_set_id, frame_velocity, parse_feedback,
+    self, Frame, ReplyKind, frame_brake, frame_current, frame_feedback, frame_id_query,
+    frame_mode, frame_position, frame_set_id, frame_velocity, parse_feedback,
 };
 use crate::transport::{SerialTransport, Transport};
 use crate::types::{Feedback, Mode};
@@ -323,6 +323,12 @@ impl<T: Transport> M0601<T> {
     /// Strip a leading half-duplex TX echo, parse, and reject frames from
     /// any motor other than this handle's.
     ///
+    /// The reply *layout* is selected from the TX frame's command byte
+    /// ([`ReplyKind::from_tx`]): a `0x74` query reply carries temperature +
+    /// an 8-bit position, a `0x64` drive reply a 16-bit position and no
+    /// temperature. Frames that elicit no telemetry (mode switch, set-ID)
+    /// yield `None`.
+    ///
     /// Some RS485 adapters loop their own transmission back, so a reply can
     /// arrive as `<tx frame><telemetry>` — or as a bare `<tx frame>` when no
     /// motor answers. A genuine reply can never byte-equal the TX frame (its
@@ -335,8 +341,9 @@ impl<T: Transport> M0601<T> {
     /// would be handed back as *this* motor's telemetry — a wheel reporting
     /// its neighbour's speed.
     fn parse_reply(&self, tx: &[u8], rx: &[u8]) -> Option<Feedback> {
+        let kind = ReplyKind::from_tx(tx)?;
         let rx = rx.strip_prefix(tx).unwrap_or(rx);
-        let fb = parse_feedback(rx)?;
+        let fb = parse_feedback(rx, kind)?;
         if fb.id != self.id {
             return None;
         }
@@ -352,13 +359,18 @@ impl<T: Transport> M0601<T> {
         fb
     }
 
-    /// Send `frame` and parse the reply as telemetry.
+    /// Send `frame` and parse the reply as telemetry, decoding it per the
+    /// layout the sent command elicits ([`ReplyKind::from_tx`]) — so a
+    /// drive frame's reply yields a hi-res 16-bit position and
+    /// `temp_c: None`, while a `0x74` query's reply yields a temperature
+    /// and an 8-bit position.
     ///
-    /// `Ok(None)` means the bus stayed silent, the reply was too short, or
-    /// the reply came from a different motor ID — all expected outcomes, not
-    /// errors. Used by the CLI's 50 Hz control loop with a short `wait`
-    /// (~6 ms). Mirrored handles flip the signs of the parsed speed/current
-    /// (the raw frame is untouched).
+    /// `Ok(None)` means the bus stayed silent, the reply was too short, the
+    /// reply came from a different motor ID, or `frame` is one that elicits
+    /// no telemetry at all (mode switch, set-ID — the frame is still sent) —
+    /// all expected outcomes, not errors. Used by the CLI's 50 Hz control
+    /// loop with a short `wait` (~6 ms). Mirrored handles flip the signs of
+    /// the parsed speed/current (the raw frame is untouched).
     pub fn transact(&mut self, frame: &Frame, wait: Duration) -> Result<Option<Feedback>> {
         let rx = lock(&self.transport).send_recv(frame, wait)?;
         Ok(self.parse_reply(frame, &rx))
@@ -366,6 +378,11 @@ impl<T: Transport> M0601<T> {
 
     /// Query telemetry with a feedback (`0x74`) frame, waiting the
     /// configured timeout for the reply.
+    ///
+    /// This is the only exchange whose reply carries the winding
+    /// temperature (`temp_c` is `Some`); its position reading is the
+    /// coarse 8-bit one (~1.4°). Drive replies via
+    /// [`transact`](Self::transact) have it the other way around.
     pub fn query(&mut self) -> Result<Option<Feedback>> {
         let frame = frame_feedback(self.id);
         self.transact(&frame, self.timeout)

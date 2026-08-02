@@ -78,9 +78,56 @@ fn query_returns_telemetry() {
         panic!("motor 0x{id:02X} did not reply — check power/wiring, or set M0601_ID")
     });
     assert_eq!(fb.id, id);
-    // Sanity, not exactness: a resting winding is well below the 80 °C trip.
-    assert!(fb.temp_c < 80, "implausible temperature {}", fb.temp_c);
+    // A 0x74 query reply always carries the winding temperature. Sanity,
+    // not exactness: a resting winding is well below the 80 °C trip.
+    let temp = fb.temp_c.expect("0x74 reply carries winding temperature");
+    assert!(temp < 80, "implausible temperature {temp}");
     assert!(fb.mode.is_some(), "unknown mode byte 0x{:02X}", fb.mode_raw);
+}
+
+/// Capture raw replies to both a 0x74 query and a 0x64 drive frame and
+/// report whether byte 9 is a CRC-8/MAXIM over bytes 0..9. Sources
+/// disagree: the DFRobot wiki and the navigation_robot C driver say
+/// replies carry that CRC; this crate's original hardware observation said
+/// they don't. This test settles it for the connected unit — it asserts
+/// nothing beyond getting replies, but prints the verdict.
+#[test]
+#[ignore = "needs hardware: set M0601_PORT"]
+fn reply_checksum_capture() {
+    let _guard = port_guard();
+    let id = motor_id();
+    let mut m = open();
+
+    let report = |label: &str, tx: &[u8], rx: &[u8]| {
+        let rx = rx.strip_prefix(tx).unwrap_or(rx);
+        let Some(frame) = rx.get(..10) else {
+            eprintln!("{label}: no reply captured ({} bytes)", rx.len());
+            return;
+        };
+        let crc = m0601::protocol::crc8_maxim(&frame[..9]);
+        let hex: Vec<String> = frame.iter().map(|b| format!("{b:02X}")).collect();
+        eprintln!(
+            "{label}: {} — byte 9 = 0x{:02X}, CRC-8/MAXIM(bytes 0..9) = 0x{crc:02X} → {}",
+            hex.join(" "),
+            frame[9],
+            if frame[9] == crc { "MATCHES" } else { "DIFFERS" },
+        );
+    };
+
+    let query = m0601::protocol::frame_feedback(id);
+    let rx = m
+        .send_raw(&query, Duration::from_millis(50))
+        .expect("query I/O");
+    report("0x74 query reply", &query, &rx);
+
+    // A zero-velocity drive frame is safe: it commands no motion in the
+    // power-up default velocity mode. Do not run this after switching the
+    // motor to position mode.
+    let drive = m0601::protocol::frame_velocity(id, 0, 1);
+    let rx = m
+        .send_raw(&drive, Duration::from_millis(50))
+        .expect("drive I/O");
+    report("0x64 drive reply", &drive, &rx);
 }
 
 /// Guard that stops the motor even if the test panics mid-spin.
@@ -114,6 +161,14 @@ fn spin_and_stop() {
         let frame = m0601::protocol::frame_velocity(m.id(), 60, 1);
         if let Ok(Some(fb)) = m.transact(&frame, Duration::from_millis(6)) {
             fastest = fastest.max(fb.speed_rpm);
+            // Drive replies use the drive layout: no temperature, and a
+            // 16-bit position that must stay within one revolution.
+            assert!(fb.temp_c.is_none(), "drive reply carried a temperature");
+            assert!(
+                (0.0..=360.0).contains(&fb.position_deg),
+                "drive-reply position out of range: {}",
+                fb.position_deg
+            );
         }
         std::thread::sleep(Duration::from_millis(14));
     }

@@ -265,43 +265,111 @@ pub fn frame_from_bytes(bytes: &[u8]) -> Result<Frame> {
     }
 }
 
-/// Parse a feedback frame from raw reply bytes.
+/// Which command elicited a telemetry reply — and therefore how its
+/// bytes 6–7 must be decoded.
+///
+/// The motor answers with **two different reply layouts** (verified against
+/// the DDT vendor sample and the DFRobot wiki — see `PROTOCOL.md`). Bytes
+/// 0–5, 8 and 9 are identical in both; only bytes 6–7 differ:
+///
+/// | Kind    | Elicited by             | Byte 6            | Byte 7        |
+/// |---------|-------------------------|-------------------|---------------|
+/// | `Query` | `0x74` feedback query   | winding temp (°C) | position u8   |
+/// | `Drive` | `0x64` drive, broadcast | position u16 BE (high) | (low)    |
+///
+/// A `Drive` reply carries **no temperature**, but its 16-bit position is
+/// ~128× finer than the `Query` reply's single byte (~0.011° vs ~1.4°).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReplyKind {
+    /// Reply to a feedback query ([`CMD_QUERY`], `0x74`): byte 6 is the
+    /// winding temperature in °C, byte 7 an 8-bit position (×360/255°).
+    Query,
+    /// Reply to a drive frame ([`CMD_DRIVE`], `0x64`) or the broadcast ID
+    /// query: bytes 6–7 are a 16-bit big-endian position (×360/32767°);
+    /// the frame carries no temperature.
+    Drive,
+}
+
+impl ReplyKind {
+    /// Classify a reply by the TX frame that elicited it (byte 1, the
+    /// command byte). Returns `None` for frames that elicit no telemetry —
+    /// the mode switch (`0xA0`) and set-ID frames — and for short slices.
+    ///
+    /// The broadcast ID query classifies as [`Drive`](Self::Drive): its
+    /// byte 1 is [`CMD_DRIVE`], and motors answer it in the drive layout.
+    ///
+    /// ```
+    /// use m0601::protocol::{self, ReplyKind};
+    /// assert_eq!(ReplyKind::from_tx(&protocol::frame_feedback(1)), Some(ReplyKind::Query));
+    /// assert_eq!(ReplyKind::from_tx(&protocol::frame_brake(1)), Some(ReplyKind::Drive));
+    /// assert_eq!(ReplyKind::from_tx(&protocol::frame_id_query()), Some(ReplyKind::Drive));
+    /// assert_eq!(ReplyKind::from_tx(&protocol::frame_mode(1, m0601::Mode::Velocity)), None);
+    /// assert_eq!(ReplyKind::from_tx(&[]), None);
+    /// ```
+    pub fn from_tx(tx: &[u8]) -> Option<Self> {
+        match *tx.get(1)? {
+            CMD_QUERY => Some(Self::Query),
+            CMD_DRIVE => Some(Self::Drive),
+            _ => None,
+        }
+    }
+}
+
+/// Parse a telemetry frame from raw reply bytes, decoding bytes 6–7
+/// according to `kind` — see [`ReplyKind`] for why the caller must know
+/// which command the reply answers.
 ///
 /// Returns `None` when fewer than [`FRAME_LEN`] bytes are supplied; longer
-/// input parses its first 10 bytes. Frames are validated by *length only* —
-/// the motor's replies do not carry a CRC-8/MAXIM in byte 9 (it is some other
-/// checksum), so [`Feedback::crc_ok`] is informational and this function
-/// never rejects on it.
+/// input parses its first 10 bytes. Frames are validated by *length only*:
+/// [`Feedback::crc_ok`] reports whether byte 9 matches a CRC-8/MAXIM
+/// (genuine replies do carry one — verified on hardware), but this
+/// function never rejects on it — see `PROTOCOL.md`.
 ///
-/// Reply layout: `[id, mode, current_i16_be, speed_i16_be, temp_u8, pos_u8,
-/// faults, chk]` with current scaled ×8/32767 A and position ×360/255°.
+/// Common layout: `[id, mode, current_i16_be, speed_i16_be, .., faults,
+/// chk]` with current scaled ×8/32767 A. `Query` replies put temperature
+/// (°C) in byte 6 and an 8-bit position (×360/255°) in byte 7; `Drive`
+/// replies put a 16-bit position (×360/32767°) in bytes 6–7 and no
+/// temperature.
 ///
-/// Position uses ×360/**255**, so byte 7 = `0xFF` reads as a full 360°
-/// (i.e. 0°, wrapped). If your unit turns out to encode a revolution as 256
-/// steps rather than 255, every reading here is stretched by ~0.4 % —
-/// worth confirming against a physically indexed wheel before relying on
-/// [`Feedback::position_deg`] for anything precise.
+/// The `Query` position uses ×360/**255**, so byte 7 = `0xFF` reads as a
+/// full 360° (i.e. 0°, wrapped); every known implementation divides by 255,
+/// not 256.
 ///
 /// ```
-/// use m0601::protocol::parse_feedback;
-/// let fb = parse_feedback(&[0x01, 0x02, 0xF8, 0x30, 0x00, 0x64, 0x28, 0x80, 0x03, 0x00])
-///     .unwrap();
-/// assert_eq!(fb.speed_rpm, 100);
-/// assert_eq!(fb.temp_c, 40);
-/// assert_eq!(fb.faults.to_string(), "SensorErr | Overcurrent");
-/// assert!(!fb.crc_ok);
+/// use m0601::protocol::{parse_feedback, ReplyKind};
+/// let raw = [0x01, 0x02, 0xF8, 0x30, 0x00, 0x64, 0x28, 0x80, 0x03, 0x00];
+/// let q = parse_feedback(&raw, ReplyKind::Query).unwrap();
+/// assert_eq!(q.speed_rpm, 100);
+/// assert_eq!(q.temp_c, Some(40));
+/// assert_eq!(q.faults.to_string(), "SensorErr | Overcurrent");
+/// assert!(!q.crc_ok);
+/// // The very same bytes decode differently as a drive reply: bytes 6–7
+/// // are one 16-bit position (0x2880 = 10368 → ~113.9°), no temperature.
+/// let d = parse_feedback(&raw, ReplyKind::Drive).unwrap();
+/// assert_eq!(d.temp_c, None);
+/// assert!((d.position_deg - 113.91).abs() < 0.01);
 /// ```
-pub fn parse_feedback(data: &[u8]) -> Option<Feedback> {
+pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
     let raw: Frame = data.get(..FRAME_LEN)?.try_into().ok()?;
     let current_raw = i16::from_be_bytes([raw[2], raw[3]]);
+    // The vendor sample and the navigation_robot C driver both decode the
+    // drive-reply position as an unsigned 16-bit value (range 0..=32767).
+    let (temp_c, position_deg) = match kind {
+        ReplyKind::Query => (Some(raw[6]), f32::from(raw[7]) * 360.0 / 255.0),
+        ReplyKind::Drive => (
+            None,
+            f32::from(u16::from_be_bytes([raw[6], raw[7]])) * 360.0 / 32767.0,
+        ),
+    };
     Some(Feedback {
         id: raw[0],
+        kind,
         mode: Mode::from_byte(raw[1]),
         mode_raw: raw[1],
         current_a: f32::from(current_raw) * 8.0 / 32767.0,
         speed_rpm: i16::from_be_bytes([raw[4], raw[5]]),
-        temp_c: raw[6],
-        position_deg: f32::from(raw[7]) * 360.0 / 255.0,
+        temp_c,
+        position_deg,
         faults: Faults(raw[8]),
         crc_ok: crc8_maxim(&raw[..9]) == raw[9],
         raw,

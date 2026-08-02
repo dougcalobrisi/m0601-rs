@@ -14,8 +14,8 @@ use m0601::Mode;
 
 use super::state::{CmdState, ModeRequest, Shared, lock};
 
-const RPM_MIN: i32 = -330;
-const RPM_MAX: i32 = 330;
+const RPM_MIN: i32 = m0601::protocol::RPM_MIN as i32;
+const RPM_MAX: i32 = m0601::protocol::RPM_MAX as i32;
 
 /// Uppercase mode name for the status line.
 fn label(mode: Mode) -> String {
@@ -38,7 +38,8 @@ pub fn run(shared: &Shared, port: &str, id: u8, preset_rpm: i16) -> io::Result<(
 }
 
 fn draw(out: &mut impl Write, shared: &Shared, port: &str, id: u8) -> io::Result<()> {
-    let fb = *lock(&shared.fb);
+    let telemetry = *lock(&shared.telemetry);
+    let fb = telemetry.fb;
     let (mode, target, braking) = {
         let cmd = lock(&shared.cmd);
         (cmd.mode, cmd.target, cmd.brake)
@@ -116,11 +117,12 @@ fn draw(out: &mut impl Write, shared: &Shared, port: &str, id: u8) -> io::Result
             MoveTo(4, 5),
             Print(format!("Position : {:6.1} deg", fb.position_deg))
         )?;
-        queue!(
-            out,
-            MoveTo(4, 6),
-            Print(format!("Temp     : {:3} C", fb.temp_c))
-        )?;
+        // Temperature arrives only in the every-10th-cycle 0x74 reply;
+        // `telemetry.temp_c` holds the last one seen. "--" until the first.
+        let temp = telemetry
+            .temp_c
+            .map_or_else(|| " --".to_owned(), |t| format!("{t:3}"));
+        queue!(out, MoveTo(4, 6), Print(format!("Temp     : {temp} C")))?;
         queue!(out, MoveTo(34, 3), Print("Status: "))?;
         queue!(
             out,
@@ -304,7 +306,7 @@ fn handle_key(shared: &Shared, code: KeyCode, modifiers: KeyModifiers, preset_rp
             // no telemetry means the speed is unknown, not that it is zero,
             // and `is_some_and` on None would have read as "not too fast"
             // and let the switch through on a bus whose RX path is dead.
-            let speed = lock(&shared.fb).map(|fb| fb.speed_rpm);
+            let speed = lock(&shared.telemetry).fb.map(|fb| fb.speed_rpm);
             match speed {
                 None => shared.set_msg("Refused: no telemetry — cannot confirm <10 RPM"),
                 Some(rpm) if rpm.abs() >= 10 => shared.set_msg(format!(
@@ -359,7 +361,7 @@ fn annotate(msg: String, pending: bool) -> String {
 /// Set the position target to the wheel's current angle. `None` when there
 /// is no telemetry to derive it from.
 fn hold_position(shared: &Shared) -> Option<f32> {
-    let deg = lock(&shared.fb).map(|fb| fb.position_deg)?;
+    let deg = lock(&shared.telemetry).fb.map(|fb| fb.position_deg)?;
     let mut cmd = lock(&shared.cmd);
     cmd.target = deg_to_raw(deg);
     cmd.brake = false;
@@ -370,6 +372,10 @@ fn hold_position(shared: &Shared) -> Option<f32> {
 ///
 /// Clamps rather than wrapping: an angle slightly past 360° should hold at
 /// the top of the range, not snap round to 0° and drive a full revolution.
+///
+/// Rounds to nearest so that a hi-res drive-reply angle (`raw` × 360/32767)
+/// round-trips back to exactly `raw` — truncating instead can land one step
+/// low and make "hold this angle" command a (sub-perceptible) move.
 pub fn deg_to_raw(deg: f32) -> i32 {
     // `f32::clamp` propagates NaN rather than clamping it, so rule NaN out
     // explicitly instead of leaning on the `as` cast's NaN-to-zero rule.
@@ -378,7 +384,7 @@ pub fn deg_to_raw(deg: f32) -> i32 {
     }
     let frac = (deg / 360.0).clamp(0.0, 1.0);
     // Saturating cast of an already-clamped value: cannot wrap or trap.
-    (frac * f32::from(u16::MAX >> 1)) as i32
+    (frac * f32::from(m0601::protocol::POS_MAX)).round() as i32
 }
 
 fn quit(shared: &Shared) {
@@ -396,15 +402,29 @@ mod tests {
     use super::{RPM_MAX, deg_to_raw, handle_key};
     use crate::cmd::control::state::{Shared, lock};
     use crossterm::event::{KeyCode, KeyModifiers};
+    use m0601::protocol::ReplyKind;
     use m0601::Mode;
 
     const NONE: KeyModifiers = KeyModifiers::NONE;
 
-    /// Telemetry reporting `mode` and `rpm`, as the motor would send it.
+    /// Query-reply telemetry reporting `mode` and `rpm`, as the motor would
+    /// send it in answer to a 0x74 frame (position byte 0x80 ≈ 180.7°).
     fn seed(shared: &Shared, mode: u8, rpm: i16) {
         let [hi, lo] = rpm.to_be_bytes();
         let frame = [0x01, mode, 0x00, 0x00, hi, lo, 0x28, 0x80, 0x00, 0x00];
-        *lock(&shared.fb) = m0601::protocol::parse_feedback(&frame);
+        if let Some(fb) = m0601::protocol::parse_feedback(&frame, ReplyKind::Query) {
+            lock(&shared.telemetry).absorb(fb);
+        }
+    }
+
+    /// Drive-reply telemetry: hi-res 16-bit position, no temperature.
+    fn seed_drive(shared: &Shared, mode: u8, rpm: i16, pos_raw: u16) {
+        let [shi, slo] = rpm.to_be_bytes();
+        let [phi, plo] = pos_raw.to_be_bytes();
+        let frame = [0x01, mode, 0x00, 0x00, shi, slo, phi, plo, 0x00, 0x00];
+        if let Some(fb) = m0601::protocol::parse_feedback(&frame, ReplyKind::Drive) {
+            lock(&shared.telemetry).absorb(fb);
+        }
     }
 
     fn press(shared: &Shared, c: char) {
@@ -463,7 +483,7 @@ mod tests {
     #[test]
     fn position_mode_is_refused_without_telemetry() {
         let shared = Shared::new();
-        assert!(lock(&shared.fb).is_none());
+        assert!(lock(&shared.telemetry).fb.is_none());
         press(&shared, 'p');
         assert!(
             lock(&shared.cmd).mode_request.is_none(),
@@ -532,5 +552,32 @@ mod tests {
         assert_eq!(deg_to_raw(1_000.0), 32_767);
         assert_eq!(deg_to_raw(f32::NAN), 0);
         assert!((0..=32_767).contains(&deg_to_raw(180.0)));
+    }
+
+    #[test]
+    fn deg_to_raw_round_trips_drive_reply_angles_exactly() {
+        // A drive reply reports raw × 360/32767 degrees; "hold this angle"
+        // must map that back to exactly raw, or entering position mode
+        // commands a (tiny) move. Rounding makes the trip exact.
+        for raw in [1u16, 3, 1000, 16_383, 20_000, 32_766, 32_767] {
+            let deg = f32::from(raw) * 360.0 / 32_767.0;
+            assert_eq!(deg_to_raw(deg), i32::from(raw), "raw {raw}");
+        }
+    }
+
+    #[test]
+    fn stop_in_position_mode_holds_hi_res_drive_angle_exactly() {
+        let shared = Shared::new();
+        lock(&shared.cmd).mode = Mode::Position;
+        lock(&shared.cmd).target = 0;
+        seed_drive(&shared, 0x03, 0, 20_000); // ≈ 219.7°, hi-res
+
+        press(&shared, 's');
+
+        assert_eq!(
+            lock(&shared.cmd).target,
+            20_000,
+            "held angle must be the exact reported position step"
+        );
     }
 }

@@ -10,9 +10,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use m0601::protocol::{
-    CUR_MAX, CUR_MIN, crc8_maxim, frame_brake, frame_current, frame_feedback, frame_from_bytes,
-    frame_id_query, frame_mode, frame_position, frame_set_id, frame_velocity, parse_feedback,
-    validate_id,
+    CUR_MAX, CUR_MIN, ReplyKind, crc8_maxim, frame_brake, frame_current, frame_feedback,
+    frame_from_bytes, frame_id_query, frame_mode, frame_position, frame_set_id, frame_velocity,
+    parse_feedback, validate_id,
 };
 use m0601::{Error, Faults, Mode};
 
@@ -81,6 +81,54 @@ fn accel_byte_is_carried_verbatim() {
         frame_velocity(0x01, 100, 0),
         [0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4F]
     );
+}
+
+/// Known-answer frames from two independent implementations: the
+/// `Il1yasviel/navigation_robot` C driver's unit tests and the MotorLink
+/// README's captured command reference (all with accel = 0). Agreement here
+/// is agreement with code that has driven real hardware.
+#[test]
+fn community_known_answer_velocity_frames() {
+    for (rpm, expected) in [
+        (30, [0x01, 0x64, 0x00, 0x1E, 0, 0, 0, 0, 0, 0x18]),
+        (50, [0x01, 0x64, 0x00, 0x32, 0, 0, 0, 0, 0, 0xD3]),
+        (100, [0x01, 0x64, 0x00, 0x64, 0, 0, 0, 0, 0, 0x4F]),
+        (150, [0x01, 0x64, 0x00, 0x96, 0, 0, 0, 0, 0, 0x53]),
+        (0, [0x01, 0x64, 0x00, 0x00, 0, 0, 0, 0, 0, 0x50]),
+        (-50, [0x01, 0x64, 0xFF, 0xCE, 0, 0, 0, 0, 0, 0xDA]),
+        (-100, [0x01, 0x64, 0xFF, 0x9C, 0, 0, 0, 0, 0, 0x9A]),
+        (-150, [0x01, 0x64, 0xFF, 0x6A, 0, 0, 0, 0, 0, 0x5A]),
+    ] {
+        assert_eq!(frame_velocity(0x01, rpm, 0), expected, "{rpm} RPM");
+    }
+}
+
+/// See [`community_known_answer_velocity_frames`] for provenance.
+#[test]
+fn community_known_answer_current_frames() {
+    for (value, expected) in [
+        (-10000, [0x01, 0x64, 0xD8, 0xF0, 0, 0, 0, 0, 0, 0x78]),
+        (-5000, [0x01, 0x64, 0xEC, 0x78, 0, 0, 0, 0, 0, 0xD3]),
+        (2000, [0x01, 0x64, 0x07, 0xD0, 0, 0, 0, 0, 0, 0x27]),
+        (5000, [0x01, 0x64, 0x13, 0x88, 0, 0, 0, 0, 0, 0xA7]),
+        (10000, [0x01, 0x64, 0x27, 0x10, 0, 0, 0, 0, 0, 0x57]),
+    ] {
+        assert_eq!(frame_current(0x01, value), expected, "current {value}");
+    }
+}
+
+/// See [`community_known_answer_velocity_frames`] for provenance.
+/// 8192/32767 ≈ 90°, 10000 ≈ 109.9°, 20000 ≈ 219.7°, 30000 ≈ 329.6°.
+#[test]
+fn community_known_answer_position_frames() {
+    for (raw, expected) in [
+        (8192, [0x01, 0x64, 0x20, 0x00, 0, 0, 0, 0, 0, 0xBF]),
+        (10000, [0x01, 0x64, 0x27, 0x10, 0, 0, 0, 0, 0, 0x57]),
+        (20000, [0x01, 0x64, 0x4E, 0x20, 0, 0, 0, 0, 0, 0x5E]),
+        (30000, [0x01, 0x64, 0x75, 0x30, 0, 0, 0, 0, 0, 0xA7]),
+    ] {
+        assert_eq!(frame_position(0x01, raw), expected, "position {raw}");
+    }
 }
 
 #[test]
@@ -193,17 +241,21 @@ fn set_id_frame_layout_and_validation() {
 }
 
 #[test]
-fn parse_feedback_golden_vector() {
-    let fb = parse_feedback(&[0x01, 0x02, 0xF8, 0x30, 0x00, 0x64, 0x28, 0x80, 0x03, 0x00])
-        .expect("valid frame parses");
+fn parse_feedback_query_golden_vector() {
+    let fb = parse_feedback(
+        &[0x01, 0x02, 0xF8, 0x30, 0x00, 0x64, 0x28, 0x80, 0x03, 0x00],
+        ReplyKind::Query,
+    )
+    .expect("valid frame parses");
     assert_eq!(fb.id, 1);
+    assert_eq!(fb.kind, ReplyKind::Query);
     assert_eq!(fb.mode, Some(Mode::Velocity));
     assert_eq!(fb.mode_raw, 0x02);
     // 0xF830 = -1998; -1998 * 8 / 32767 = -0.4879... A. Compared at the
     // 3 decimals the CLI displays.
     assert_eq!((fb.current_a * 1000.0).round() / 1000.0, -0.488);
     assert_eq!(fb.speed_rpm, 100);
-    assert_eq!(fb.temp_c, 40);
+    assert_eq!(fb.temp_c, Some(40));
     // 0x80 = 128; 128 * 360 / 255 = 180.70... deg.
     assert_eq!((fb.position_deg * 10.0).round() / 10.0, 180.7);
     assert_eq!(fb.faults, Faults(0x03));
@@ -213,15 +265,73 @@ fn parse_feedback_golden_vector() {
     assert_eq!(fb.mode_name(), "Velocity");
 }
 
+/// The same bytes as [`parse_feedback_query_golden_vector`] decoded as a
+/// drive reply — this pair of tests *is* the dual-layout contract: bytes
+/// 6–7 (`0x28 0x80`) are one 16-bit position, and no temperature exists.
+#[test]
+fn parse_feedback_drive_golden_vector() {
+    let fb = parse_feedback(
+        &[0x01, 0x02, 0xF8, 0x30, 0x00, 0x64, 0x28, 0x80, 0x03, 0x00],
+        ReplyKind::Drive,
+    )
+    .expect("valid frame parses");
+    assert_eq!(fb.kind, ReplyKind::Drive);
+    assert_eq!(fb.temp_c, None, "drive replies carry no temperature");
+    // 0x2880 = 10368; 10368 * 360 / 32767 = 113.90... deg.
+    assert_eq!((fb.position_deg * 10.0).round() / 10.0, 113.9);
+    // Common fields decode identically to the query layout.
+    assert_eq!(fb.speed_rpm, 100);
+    assert_eq!((fb.current_a * 1000.0).round() / 1000.0, -0.488);
+    assert_eq!(fb.faults, Faults(0x03));
+}
+
+#[test]
+fn parse_feedback_drive_position_endpoints() {
+    let mut frame = [0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0x00, 0x00];
+    let fb = parse_feedback(&frame, ReplyKind::Drive).unwrap();
+    assert_eq!(fb.position_deg, 360.0, "0x7FFF is a full turn");
+    frame[6] = 0x00;
+    frame[7] = 0x00;
+    let fb = parse_feedback(&frame, ReplyKind::Drive).unwrap();
+    assert_eq!(fb.position_deg, 0.0);
+}
+
+/// The reply layout is knowable only from the frame that elicited it; this
+/// pins the classification for every TX frame the crate can produce.
+#[test]
+fn reply_kind_classification() {
+    assert_eq!(ReplyKind::from_tx(&frame_feedback(1)), Some(ReplyKind::Query));
+    assert_eq!(
+        ReplyKind::from_tx(&frame_velocity(1, 100, 1)),
+        Some(ReplyKind::Drive)
+    );
+    assert_eq!(
+        ReplyKind::from_tx(&frame_current(1, 100)),
+        Some(ReplyKind::Drive)
+    );
+    assert_eq!(
+        ReplyKind::from_tx(&frame_position(1, 100)),
+        Some(ReplyKind::Drive)
+    );
+    assert_eq!(ReplyKind::from_tx(&frame_brake(1)), Some(ReplyKind::Drive));
+    // The broadcast ID query's command byte is 0x64 — drive layout.
+    assert_eq!(ReplyKind::from_tx(&frame_id_query()), Some(ReplyKind::Drive));
+    // Frames that elicit no telemetry classify as None.
+    assert_eq!(ReplyKind::from_tx(&frame_mode(1, Mode::Velocity)), None);
+    assert_eq!(ReplyKind::from_tx(&frame_set_id(0x05).unwrap()), None);
+    assert_eq!(ReplyKind::from_tx(&[0x01]), None);
+    assert_eq!(ReplyKind::from_tx(&[]), None);
+}
+
 #[test]
 fn parse_feedback_length_handling() {
     // Too short: no telemetry.
-    assert!(parse_feedback(&[0x01; 9]).is_none());
-    assert!(parse_feedback(&[]).is_none());
+    assert!(parse_feedback(&[0x01; 9], ReplyKind::Query).is_none());
+    assert!(parse_feedback(&[], ReplyKind::Query).is_none());
     // Longer input parses its first 10 bytes.
     let mut long = vec![0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00, 0x00];
     long.extend_from_slice(&[0xAA, 0xBB]);
-    let fb = parse_feedback(&long).expect("first 10 bytes parse");
+    let fb = parse_feedback(&long, ReplyKind::Query).expect("first 10 bytes parse");
     assert_eq!(fb.speed_rpm, 100);
 }
 
@@ -233,15 +343,19 @@ fn parse_feedback_never_rejects_on_crc() {
     // implementation of it, correct or not.
     let good = [0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00, 0x0D];
     assert_eq!(crc8_maxim(&good[..9]), 0x0D, "vector is self-consistent");
-    assert!(parse_feedback(&good).unwrap().crc_ok);
+    assert!(parse_feedback(&good, ReplyKind::Query).unwrap().crc_ok);
+    // crc_ok is computed identically for both layouts.
+    assert!(parse_feedback(&good, ReplyKind::Drive).unwrap().crc_ok);
 
-    // A frame whose byte 9 is *not* a CRC-8/MAXIM — the normal case for
-    // real motor replies — still parses, with crc_ok = false.
+    // A frame whose byte 9 is *not* a valid CRC-8/MAXIM still parses, with
+    // crc_ok = false — the reply CRC is advisory, never grounds to reject.
     let mut bad = good;
     bad[9] ^= 0xFF;
-    let fb = parse_feedback(&bad).unwrap();
-    assert!(!fb.crc_ok);
-    assert_eq!(fb.speed_rpm, 100, "telemetry is never rejected on CRC");
+    for kind in [ReplyKind::Query, ReplyKind::Drive] {
+        let fb = parse_feedback(&bad, kind).unwrap();
+        assert!(!fb.crc_ok);
+        assert_eq!(fb.speed_rpm, 100, "telemetry is never rejected on CRC");
+    }
 }
 
 #[test]
@@ -250,7 +364,7 @@ fn faults_display_parity() {
     assert_eq!(Faults(0x01).to_string(), "SensorErr");
     assert_eq!(
         Faults(0x1F).to_string(),
-        "SensorErr | Overcurrent | PhaseOvercurrent | Stall | Troubleshoot"
+        "SensorErr | Overcurrent | PhaseOvercurrent | Stall | Overheat"
     );
     // Unknown bits only: hex fallback.
     assert_eq!(Faults(0x20).to_string(), "0x20");
@@ -261,13 +375,13 @@ fn faults_display_parity() {
     assert_eq!(Faults(0xE0).to_string(), "0xE0");
     assert_eq!(
         Faults(0xFF).to_string(),
-        "SensorErr | Overcurrent | PhaseOvercurrent | Stall | Troubleshoot | 0xE0"
+        "SensorErr | Overcurrent | PhaseOvercurrent | Stall | Overheat | 0xE0"
     );
     assert!(Faults(0x01).sensor_err());
     assert!(Faults(0x02).overcurrent());
     assert!(Faults(0x04).phase_overcurrent());
     assert!(Faults(0x08).stall());
-    assert!(Faults(0x10).troubleshoot());
+    assert!(Faults(0x10).overheat());
     assert!(Faults(0).is_ok());
     assert!(!Faults(0x20).is_ok());
 }

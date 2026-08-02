@@ -11,7 +11,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use m0601::protocol::{
-    Frame, frame_brake, frame_current, frame_feedback, frame_position, frame_velocity,
+    CUR_MAX, CUR_MIN, Frame, POS_MAX, RPM_MAX, RPM_MIN, frame_brake, frame_current,
+    frame_feedback, frame_position, frame_velocity,
 };
 use m0601::{M0601, Mode};
 
@@ -44,9 +45,11 @@ pub fn run(mut motor: M0601, shared: Arc<Shared>) {
 fn active_frame(id: u8, cmd: &CmdState) -> Frame {
     match cmd.mode {
         Mode::Velocity if cmd.brake => frame_brake(id),
-        Mode::Velocity => frame_velocity(id, cmd.target.clamp(-330, 330) as i16, 1),
-        Mode::Current => frame_current(id, cmd.target.clamp(-32767, 32767) as i16),
-        Mode::Position => frame_position(id, cmd.target.clamp(0, 32767) as u16),
+        Mode::Velocity => {
+            frame_velocity(id, cmd.target.clamp(RPM_MIN.into(), RPM_MAX.into()) as i16, 1)
+        }
+        Mode::Current => frame_current(id, cmd.target.clamp(CUR_MIN.into(), CUR_MAX.into()) as i16),
+        Mode::Position => frame_position(id, cmd.target.clamp(0, POS_MAX.into()) as u16),
     }
 }
 
@@ -67,7 +70,8 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
                     // 0 for velocity and current, but the wheel's present
                     // angle for position, where 0 means "drive to 0 deg".
                     let target = req.target.unwrap_or_else(|| match req.mode {
-                        Mode::Position => lock(&shared.fb)
+                        Mode::Position => lock(&shared.telemetry)
+                            .fb
                             .map_or(0, |fb| super::ui::deg_to_raw(fb.position_deg)),
                         Mode::Velocity | Mode::Current => 0,
                     });
@@ -91,21 +95,22 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
         // 50 Hz — and the motor would coast a little every 200 ms.
         let drive = active_frame(motor.id(), &cmd);
         match motor.transact(&drive, REPLY_WAIT) {
-            Ok(Some(fb)) => *lock(&shared.fb) = Some(fb),
+            Ok(Some(fb)) => lock(&shared.telemetry).absorb(fb),
             Ok(None) => {} // silent cycle — keep driving
             // Transient bus errors (USB hiccup) must not kill the loop; the
             // protocol coasts the motor if we truly go quiet.
             Err(e) => shared.set_msg(format!("bus error: {e} (still polling)")),
         }
 
-        // Drive replies carry telemetry too, but only the 0x74 reply
-        // refreshes temperature — so ask for one as an EXTRA frame. Two
-        // transactions still fit the 20 ms budget (each is ~6 ms of wait
-        // plus ~2 ms on the wire).
+        // Drive replies carry telemetry too (with a hi-res 16-bit position),
+        // but only the 0x74 reply carries the winding temperature — so ask
+        // for one as an EXTRA frame; `absorb` retains its temperature across
+        // the drive replies in between. Two transactions still fit the 20 ms
+        // budget (each is ~6 ms of wait plus ~2 ms on the wire).
         if cycle.is_multiple_of(10) {
             let query = frame_feedback(motor.id());
             if let Ok(Some(fb)) = motor.transact(&query, REPLY_WAIT) {
-                *lock(&shared.fb) = Some(fb);
+                lock(&shared.telemetry).absorb(fb);
             }
         }
 

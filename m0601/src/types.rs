@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::protocol::Frame;
+use crate::protocol::{Frame, ReplyKind};
 
 /// The three closed-loop control modes of the M0601.
 ///
@@ -71,8 +71,9 @@ impl FromStr for Mode {
 ///
 /// The motor protects itself in hardware — bus overcurrent at 3 A, phase
 /// overcurrent at 4.6 A, winding over-temperature at 80 °C (released at
-/// 75 °C), stall after >5 s — and auto-resets each protection after ~5 s.
-/// These bits report which protection tripped.
+/// 75 °C), stall after >5 s — and auto-resets each protection after ~5 s
+/// (over-temperature releases on cooling instead). These bits report which
+/// protection tripped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Faults(pub u8);
 
@@ -85,15 +86,19 @@ impl Faults {
     pub const PHASE_OVERCURRENT: u8 = 0x04;
     /// Stall protection, >5 s locked (`0x08`).
     pub const STALL: u8 = 0x08;
-    /// General troubleshoot flag (`0x10`).
-    pub const TROUBLESHOOT: u8 = 0x10;
+    /// Overheat fault: winding over-temperature, 80 °C trip, released on
+    /// cooling to 75 °C (`0x10`).
+    ///
+    /// The DFRobot wiki names this bit "Overheat fault"; MotorLink's label
+    /// "Troubleshoot" is wrong — see `PROTOCOL.md`.
+    pub const OVERHEAT: u8 = 0x10;
 
     const NAMES: [(u8, &'static str); 5] = [
         (Self::SENSOR_ERR, "SensorErr"),
         (Self::OVERCURRENT, "Overcurrent"),
         (Self::PHASE_OVERCURRENT, "PhaseOvercurrent"),
         (Self::STALL, "Stall"),
-        (Self::TROUBLESHOOT, "Troubleshoot"),
+        (Self::OVERHEAT, "Overheat"),
     ];
 
     /// `true` when no fault bit is set.
@@ -121,9 +126,9 @@ impl Faults {
         self.0 & Self::STALL != 0
     }
 
-    /// General troubleshoot flag.
-    pub fn troubleshoot(self) -> bool {
-        self.0 & Self::TROUBLESHOOT != 0
+    /// Overheat fault (80 °C trip / 75 °C release).
+    pub fn overheat(self) -> bool {
+        self.0 & Self::OVERHEAT != 0
     }
 }
 
@@ -177,6 +182,9 @@ impl fmt::Display for Faults {
 pub struct Feedback {
     /// Responding motor's RS485 ID.
     pub id: u8,
+    /// Which reply layout this frame was decoded with — determined by the
+    /// command that elicited it, not by anything in the reply itself.
+    pub kind: ReplyKind,
     /// Active control mode, if byte 1 held a known mode value.
     pub mode: Option<Mode>,
     /// Raw mode byte, for display when `mode` is `None`.
@@ -185,17 +193,23 @@ pub struct Feedback {
     pub current_a: f32,
     /// Signed wheel speed in RPM.
     pub speed_rpm: i16,
-    /// Winding temperature in °C.
-    pub temp_c: u8,
-    /// Wheel position in degrees (`u8` × 360 / 255).
+    /// Winding temperature in °C — `Some` only for
+    /// [`ReplyKind::Query`] replies. Drive-frame and broadcast replies
+    /// carry position in that byte instead, never a temperature.
+    pub temp_c: Option<u8>,
+    /// Wheel position in degrees. Resolution depends on [`kind`](Self::kind):
+    /// ~1.4° for a `Query` reply (`u8` × 360 / 255), ~0.011° for a `Drive`
+    /// reply (`u16` × 360 / 32767).
     pub position_deg: f32,
     /// Fault bitmask (byte 8).
     pub faults: Faults,
     /// Whether byte 9 matches a CRC-8/MAXIM over bytes 0..9.
     ///
-    /// **Informational only.** The motor's replies do *not* carry a
-    /// CRC-8/MAXIM there (byte 9 is some other checksum), so this is
-    /// normally `false` for genuine frames. Never reject telemetry on it.
+    /// Genuine replies carry that CRC (verified against real hardware —
+    /// see `PROTOCOL.md`), so this is normally `true`. It is still
+    /// **informational only**: telemetry is never rejected on it, since
+    /// not all reference implementations agree and firmware revisions may
+    /// differ.
     pub crc_ok: bool,
     /// The raw 10-byte frame the telemetry was parsed from.
     pub raw: Frame,

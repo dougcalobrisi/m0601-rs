@@ -4,21 +4,38 @@ A reusable driver crate ([`m0601/`](m0601)) and a CLI
 ([`m0601-cli/`](m0601-cli), binary `m0601`) for the DFRobot **M0601**
 direct-drive hub motor over half-duplex RS485.
 
-**M0601** is the motor model; **FIT1042** (left) and **FIT1038** (right) are
-DFRobot's SKUs for its mirror-image builds. They are electrically identical
-and speak the same protocol, so this one library covers both — see the
-mirror flag below.
+**M0601** is the motor model — a rebadged Direct Drive Tech **M0601C-111**;
+**FIT1042** (left) and **FIT1038** (right) are DFRobot's SKUs for its
+mirror-image builds. They are electrically identical and speak the same
+protocol, so this one library covers both — see the mirror flag below.
 
 The M0601 is **not Modbus**: fixed 10-byte frames at 115200 8N1, and a
 *polling* protocol — the motor keeps moving only while drive frames keep
-arriving at **≥50 Hz** (max 500 Hz). If the host stops sending, the wheel
-coasts to a stop; that is the protocol's built-in fail-safe.
+arriving at **~50 Hz** (official docs state only a 500 Hz maximum; the
+50 Hz floor is the community consensus and matches observation). If the
+host stops sending, the wheel coasts to a stop; that is the protocol's
+built-in fail-safe.
 
 Host frames carry a CRC-8/MAXIM in byte 9, with two exceptions: the
 mode-switch frame puts the mode there instead, and the set-ID frame has no
-checksum at all. Motor replies do *not* use CRC-8/MAXIM — never reject
-telemetry on it. Full protocol reference lives in the crate docs
-(`cargo doc --open -p m0601`).
+checksum at all. Replies carry the same CRC (verified on real hardware,
+though some reference implementations dispute it) — the driver still never
+rejects telemetry on it.
+
+Telemetry replies come in **two layouts**: a `0x74` query reply carries the
+winding temperature and a coarse 8-bit position, while replies to drive
+frames carry a fine 16-bit position and no temperature. The library decodes
+each reply by the command that elicited it.
+
+Documentation map:
+
+- **[USAGE.md](USAGE.md)** — how to use it: hardware setup, every CLI
+  subcommand, and a library cookbook (drive loops, modes, mirroring,
+  testing with mocks, troubleshooting).
+- **[PROTOCOL.md](PROTOCOL.md)** — the full protocol and hardware
+  reference: spec tables, wiring, every frame byte-by-byte, both reply
+  layouts, and the known contradictions between sources.
+- **`cargo doc --open -p m0601`** — the library API contract.
 
 One rule worth carrying into any code you write against this: **a zero
 setpoint does not mean "stop".** It only does in velocity mode — the same
@@ -132,12 +149,18 @@ expected bytes are written out as literals, derived from the DFRobot frame
 layout and the CRC-8/MAXIM specification — the CRC implementation is
 anchored to that algorithm's published check value (`crc8("123456789") ==
 0xA1`), so no assertion recomputes its own expectation with the code under
-test. Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
+test. A further set of known-answer frames is taken verbatim from two
+independent implementations that have driven real hardware (see
+[PROTOCOL.md](PROTOCOL.md)). Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
 repeats, safe-stop sequencing) runs against an in-memory mock transport.
 The `spin_and_stop` hardware test additionally requires
 `M0601_ALLOW_MOTION=1` — it briefly spins the wheel.
 
 ## References
 
+See [PROTOCOL.md](PROTOCOL.md) for the full spec with per-claim sourcing.
+
 - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
+- [DDT M0601C-111 vendor sample code](https://github.com/tech-life-hacking/DDT_M0601C_111)
+- [navigation_robot, an independent C driver with test vectors](https://github.com/Il1yasviel/navigation_robot)
 - [MotorLink, an independent implementation](https://github.com/MukeshSankhla/MotorLink)

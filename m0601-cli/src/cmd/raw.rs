@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use m0601::M0601;
-use m0601::protocol::{Frame, frame_from_bytes, parse_feedback};
+use m0601::protocol::{Frame, ReplyKind, frame_from_bytes, parse_feedback};
 
 /// Tokenize `"01 74,00 ..."` (spaces and/or commas, optional `0x` prefixes)
 /// into a frame; the library appends the CRC when 9 bytes are given and
@@ -48,14 +48,18 @@ pub fn run(port: &str, id: u8, timeout: Duration, hex: &str) -> m0601::Result<Ex
     }
 
     println!("RX: {}", hex_upper(&resp));
-    if let Some(fb) = parse_feedback(&resp) {
+    // The reply layout depends on the command that was sent: only decode
+    // when the TX frame is one that elicits telemetry, using its layout.
+    if let Some(fb) = ReplyKind::from_tx(&frame).and_then(|kind| parse_feedback(&resp, kind)) {
+        let temp = fb
+            .temp_c
+            .map_or_else(|| "--".to_owned(), |t| format!("{t}C"));
         println!(
-            "    decoded -> mode {}, {} RPM, {:.3} A, {:.1} deg, temp {}C, err {}",
+            "    decoded -> mode {}, {} RPM, {:.3} A, {:.1} deg, temp {temp}, err {}",
             fb.mode_name(),
             fb.speed_rpm,
             fb.current_a,
             fb.position_deg,
-            fb.temp_c,
             fb.faults
         );
     }

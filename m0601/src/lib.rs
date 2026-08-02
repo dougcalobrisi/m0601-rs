@@ -32,10 +32,11 @@
 //!
 //! | Protection        | Trip                    | Fault bit |
 //! |-------------------|-------------------------|-----------|
+//! | Sensor error      | hall/encoder fault      | `0x01`    |
 //! | Bus overcurrent   | 3 A                     | `0x02`    |
 //! | Phase overcurrent | 4.6 A                   | `0x04`    |
-//! | Over-temperature  | 80 °C (releases 75 °C)  | —         |
 //! | Stall             | locked > 5 s            | `0x08`    |
+//! | Over-temperature  | 80 °C (releases 75 °C)  | `0x10`    |
 //!
 //! # Wire format
 //!
@@ -54,15 +55,26 @@
 //!   (`C8 64 00×7 DE`) and set-ID (`AA 55 53 <id> 00×6`, no CRC, must be
 //!   sent 5×, one motor on the bus).
 //!
-//! Motor → host feedback replies:
+//! Motor → host telemetry replies come in **two layouts**, selected by the
+//! command that elicited them ([`ReplyKind`]):
+//!
+//! Reply to a `0x74` feedback query ([`ReplyKind::Query`]):
 //!
 //! | Byte | 0  | 1    | 2–3                | 4–5             | 6       | 7            | 8      | 9   |
 //! |------|----|------|--------------------|-----------------|---------|--------------|--------|-----|
 //! |      | ID | mode | current (i16 BE)   | speed (i16 BE)  | temp °C | position u8  | faults | chk |
 //!
-//! Current scales ×8/32767 to amps; position ×360/255 to degrees. **Byte 9
-//! of a reply is *not* a CRC-8/MAXIM** — never reject telemetry on CRC
-//! ([`Feedback::crc_ok`] is informational only).
+//! Reply to a `0x64` drive frame or the broadcast ID query
+//! ([`ReplyKind::Drive`]) — no temperature, but a 16-bit position:
+//!
+//! | Byte | 0  | 1    | 2–3                | 4–5             | 6–7                  | 8      | 9   |
+//! |------|----|------|--------------------|-----------------|----------------------|--------|-----|
+//! |      | ID | mode | current (i16 BE)   | speed (i16 BE)  | position (u16 BE)    | faults | chk |
+//!
+//! Current scales ×8/32767 to amps; the 8-bit position ×360/255 and the
+//! 16-bit position ×360/32767 to degrees. Replies carry a CRC-8/MAXIM in
+//! byte 9 (verified on hardware), but telemetry is **never rejected on
+//! it** — [`Feedback::crc_ok`] is informational only; see `PROTOCOL.md`.
 //!
 //! # Control modes
 //!
@@ -87,7 +99,11 @@
 //! # fn main() -> m0601::Result<()> {
 //! let mut motor = M0601::open("/dev/ttyUSB0", 0x01, Duration::from_millis(150))?;
 //! match motor.query()? {
-//!     Some(fb) => println!("{:+} RPM, {:.1} °C, faults: {}", fb.speed_rpm, fb.temp_c, fb.faults),
+//!     // `query()` replies always carry the winding temperature.
+//!     Some(fb) if fb.temp_c.is_some_and(|t| t < 70) => {
+//!         println!("{:+} RPM, faults: {}", fb.speed_rpm, fb.faults);
+//!     }
+//!     Some(fb) => println!("running hot: {:?} °C", fb.temp_c),
 //!     None => println!("no reply — check 18 V power, wiring (brown → GND), A/B polarity"),
 //! }
 //! # Ok(())
@@ -114,8 +130,15 @@
 //!
 //! # References
 //!
+//! The repository's `PROTOCOL.md` is the full protocol and hardware
+//! reference, with per-claim sourcing and the known contradictions between
+//! sources. Primary materials:
+//!
 //! - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
-//! - [MotorLink, an independent implementation](https://github.com/MukeshSankhla/MotorLink)
+//! - [DDT M0601C-111 vendor sample](https://github.com/tech-life-hacking/DDT_M0601C_111)
+//!   (the M0601 is a rebadged DDT M0601C-111)
+//! - [navigation_robot, independent C driver](https://github.com/Il1yasviel/navigation_robot)
+//! - [MotorLink, independent implementation](https://github.com/MukeshSankhla/MotorLink)
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -128,5 +151,6 @@ pub mod types;
 
 pub use bus::{Bus, M0601};
 pub use error::{Error, Result};
+pub use protocol::ReplyKind;
 pub use transport::{MockTransport, SerialTransport, Transport};
 pub use types::{Faults, Feedback, Mode};

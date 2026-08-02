@@ -45,6 +45,31 @@ pub struct CmdState {
     pub mode_request: Option<ModeRequest>,
 }
 
+/// Latest telemetry plus the last-known winding temperature.
+///
+/// Drive replies (49 cycles in 50) carry no temperature — bytes 6–7 are a
+/// 16-bit position in that layout — so the last temperature seen in a 0x74
+/// query reply is retained separately rather than faked into a [`Feedback`]
+/// whose raw frame never contained it.
+#[derive(Clone, Copy, Default)]
+pub struct Telemetry {
+    /// Most recent reply of either kind.
+    pub fb: Option<Feedback>,
+    /// Winding temperature from the most recent query reply.
+    pub temp_c: Option<u8>,
+}
+
+impl Telemetry {
+    /// Store `fb` as latest, refreshing the retained temperature when the
+    /// reply carries one.
+    pub fn absorb(&mut self, fb: Feedback) {
+        if let Some(t) = fb.temp_c {
+            self.temp_c = Some(t);
+        }
+        self.fb = Some(fb);
+    }
+}
+
 /// State shared between the UI and poll threads.
 pub struct Shared {
     /// Cleared by: Q/Esc/Ctrl-C key, signal handler, or either thread
@@ -53,7 +78,7 @@ pub struct Shared {
     /// Drive command, owned logically by the UI, read by the poll thread.
     pub cmd: Mutex<CmdState>,
     /// Latest telemetry, written by the poll thread, read by the UI.
-    pub fb: Mutex<Option<Feedback>>,
+    pub telemetry: Mutex<Telemetry>,
     /// One-line status message shown at the bottom of the dashboard.
     pub msg: Mutex<String>,
 }
@@ -68,7 +93,7 @@ impl Shared {
                 brake: false,
                 mode_request: None,
             }),
-            fb: Mutex::new(None),
+            telemetry: Mutex::new(Telemetry::default()),
             msg: Mutex::new("Ready. Ensure the wheel is clear before spinning.".to_owned()),
         }
     }
@@ -83,4 +108,30 @@ impl Shared {
 /// the motor even if the other thread panicked.
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Telemetry;
+    use m0601::Feedback;
+    use m0601::protocol::{ReplyKind, parse_feedback};
+
+    /// The same reply bytes decoded as either kind (temp 40 °C as a query).
+    fn fb(kind: ReplyKind) -> Feedback {
+        parse_feedback(&[0x01, 0x02, 0, 0, 0, 0x64, 0x28, 0x80, 0, 0], kind)
+            .expect("valid frame")
+    }
+
+    #[test]
+    fn absorb_retains_temperature_across_drive_replies() {
+        let mut t = Telemetry::default();
+        t.absorb(fb(ReplyKind::Drive));
+        assert_eq!(t.temp_c, None, "no query reply seen yet");
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(t.temp_c, Some(40));
+        t.absorb(fb(ReplyKind::Drive));
+        assert_eq!(t.temp_c, Some(40), "a drive reply must not clear it");
+        // fb always tracks the latest reply of either kind.
+        assert_eq!(t.fb.map(|fb| fb.kind), Some(ReplyKind::Drive));
+    }
 }
