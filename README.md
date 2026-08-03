@@ -44,13 +44,32 @@ zero-valued frame commands a move to 0° in position mode and zero torque
 
 ## Build & install
 
+Needs Rust **1.88** or newer (edition 2024 plus let-chains). Linux is the
+tested platform; the serial layer is portable, but the `/dev/ttyUSB0` paths
+and the `dialout` group below are Linux-specific.
+
 ```sh
+git clone https://github.com/dougcalobrisi/m0601-rs-test.git
+cd m0601-rs-test
 cargo build --release              # binary at target/release/m0601
 cargo install --path m0601-cli     # or install `m0601` into ~/.cargo/bin
 ```
 
 If opening `/dev/ttyUSB0` fails with a permission error, add yourself to the
 `dialout` group: `sudo usermod -aG dialout $USER` (log out and back in).
+
+## Before you spin it
+
+`control` and `drive` start driving the motor **immediately**, with no
+confirmation prompt. A direct-drive hub motor has no gearbox to slow it
+down, and the `1`–`5` presets reach 250 RPM.
+
+- Clear the wheel, and secure the chassis so it cannot drive itself off the
+  bench.
+- Remember that **a zero setpoint does not mean "stop"** outside velocity
+  mode (see above).
+- `Ctrl-C` brakes. So does every other exit path — but only while the
+  process is alive to do it.
 
 ## Usage
 
@@ -64,14 +83,29 @@ m0601 info                     # config + one-shot live readout
 m0601 monitor --hz 5           # live line dashboard, Ctrl+C to stop
 m0601 monitor --csv log.csv    # ... also log rows to CSV
 m0601 control --rpm 100        # full-screen keyboard control (see below)
+m0601 drive velocity --rpm 100 --secs 3  # spin at 100 RPM for 3 s, then brake
+m0601 drive current --amps 1.0           # hold ~1 A of torque (until Ctrl-C)
+m0601 drive position --deg 180           # rotate to 180° and hold (needs <10 RPM)
 m0601 set-id --new 0x02        # change the motor's persistent RS485 ID
 m0601 set-id --new 0x02 --yes  # ... skipping the confirmation prompt
 m0601 raw "01 74 00 00 00 00 00 00 00"   # arbitrary frame, CRC auto-added
 ```
 
-`--timeout` governs `scan`, `info`, `monitor` and `set-id`. It does not
-apply to `control`, whose 50 Hz loop uses its own fixed 6 ms reply wait, and
-`raw` raises it to a 200 ms floor so a slow reply is not missed.
+`drive` is the scriptable counterpart to `control`: it holds one setpoint in
+one mode — `velocity` (RPM), `current` (amps), or `position` (degrees) —
+resending at 50 Hz until `--secs` elapses or you Ctrl-C, then it brakes.
+Every exit path runs `safe_stop` (forces velocity, zeroes, brakes), so the
+wheel is stopped on a clean exit, a signal, or a panic. Position mode is
+refused at 10 RPM or above, per protocol, and also when no telemetry has
+arrived — without a reading the speed is unknown, not zero.
+
+`--secs` accepts 0–3600; omit it to drive until Ctrl-C.
+
+`--timeout` governs `scan`, `info`, `monitor` and `set-id`. It does not apply
+to `control` or `drive`, whose 50 Hz loops use a fixed 6 ms reply wait (only
+`drive`'s pre-flight speed check, before entering position mode, waits the
+full `--timeout`), and `raw` raises it to a 200 ms floor so a slow reply is
+not missed.
 
 `set-id` polls all 254 IDs before writing, because the set-ID frame is
 unaddressed and would rename *every* motor that hears it — a broadcast scan
@@ -84,8 +118,8 @@ cannot prove only one is connected. Expect it to take ~40 s.
 | `F` / `B` | forward / backward at the `--rpm` preset (switches to velocity mode) |
 | `1`–`5`   | 50–250 RPM (switches to velocity mode) |
 | `←` / `→` | nudge ±10 RPM (velocity mode only) |
-| `S`       | stop — 0 RPM in velocity mode, hold current angle in position mode |
-| `K`       | electric brake (velocity mode only) |
+| `S`       | 0 RPM in velocity mode; hold the current angle in position mode; **zero torque — a coast, not a stop — in current mode** |
+| `K`       | electric brake (velocity mode only; ignored in current and position mode) |
 | `V`/`C`/`P` | switch mode: velocity / current / position |
 | `Q` / `Esc` / `Ctrl-C` | quit — forces velocity mode, zeroes, then brakes |
 
@@ -164,3 +198,11 @@ See [PROTOCOL.md](PROTOCOL.md) for the full spec with per-claim sourcing.
 - [DDT M0601C-111 vendor sample code](https://github.com/tech-life-hacking/DDT_M0601C_111)
 - [navigation_robot, an independent C driver with test vectors](https://github.com/Il1yasviel/navigation_robot)
 - [MotorLink, an independent implementation](https://github.com/MukeshSankhla/MotorLink)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+This project is not affiliated with DFRobot or Direct Drive Tech. It drives
+physical hardware that can cause injury or damage; it comes with no warranty
+of any kind, as set out in the license.

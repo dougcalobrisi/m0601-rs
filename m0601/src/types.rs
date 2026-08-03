@@ -203,7 +203,7 @@ pub struct Feedback {
     pub position_deg: f32,
     /// Fault bitmask (byte 8).
     pub faults: Faults,
-    /// Whether byte 9 matches a CRC-8/MAXIM over bytes 0..9.
+    /// Whether byte 9 matches a CRC-8/MAXIM over bytes 0-8.
     ///
     /// Genuine replies carry that CRC (verified against real hardware —
     /// see `PROTOCOL.md`), so this is normally `true`. It is still
