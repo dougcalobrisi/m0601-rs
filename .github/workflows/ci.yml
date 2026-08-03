@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are failures here: the workspace's no-panic lints
+  # (unwrap/expect/panic = deny) are the point, and a clippy warning that
+  # only shows up locally is a clippy warning nobody reads.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.88 is the declared MSRV (rust-version in Cargo.toml): edition
+        # 2024 needs 1.85, let-chains need 1.88.
+        rust: [1.88.0, stable]
+    steps:
+      # Actions are pinned to commit SHAs, not moving tags: a tag can be
+      # repointed at new code without the workflow changing. The trailing
+      # comment records what each SHA was when it was pinned.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # No libudev needed: the driver depends on serialport with
+      # default-features = false, since it only ever opens a named port and
+      # never enumerates them.
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test
+        # The hardware-in-the-loop tests are all #[ignore]d and need a real
+        # motor on a serial port, so they are skipped here by default.
+        run: cargo test --workspace
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The SHA below is the tip of this action's `stable` branch, whose
+      # action.yml carries `default: stable`. Pinning keeps that default,
+      # and rustup still resolves `stable` to the current release at run
+      # time — this pins the action, not the Rust version.
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # RUSTDOCFLAGS rather than RUSTFLAGS: broken intra-doc links are a
+      # rustdoc lint, and the published API docs are the library's contract.
+      - run: cargo doc --no-deps -p m0601
+        env:
+          RUSTDOCFLAGS: -D warnings

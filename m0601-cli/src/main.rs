@@ -227,13 +227,13 @@ fn main() -> ExitCode {
                 },
                 DriveMode::Current { amps, secs } => cmd::drive::Plan {
                     setpoint: cmd::drive::Setpoint::Current {
-                        raw: cmd::drive::amps_to_raw(amps),
+                        raw: m0601::protocol::amps_to_raw(amps),
                     },
                     secs,
                 },
                 DriveMode::Position { deg, secs } => cmd::drive::Plan {
                     setpoint: cmd::drive::Setpoint::Position {
-                        raw: cmd::drive::deg_to_raw(deg),
+                        raw: m0601::protocol::deg_to_raw(deg),
                     },
                     secs,
                 },

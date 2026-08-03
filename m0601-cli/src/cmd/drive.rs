@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use m0601::protocol::{
-    CUR_MAX, CUR_MIN, Frame, POS_MAX, frame_current, frame_feedback, frame_position, frame_velocity,
+    Frame, frame_current, frame_feedback, frame_position, frame_velocity, raw_to_amps, raw_to_deg,
 };
 use m0601::{Feedback, M0601, Mode};
 
@@ -37,8 +37,8 @@ const TEMP_EVERY: u64 = 10;
 const DRAW_EVERY: u64 = 5;
 
 /// A fully-resolved setpoint in the motor's own wire units. Friendly units
-/// (amps, degrees) are converted at the CLI boundary — see [`amps_to_raw`]
-/// and [`deg_to_raw`].
+/// (amps, degrees) are converted at the CLI boundary by
+/// [`m0601::protocol::amps_to_raw`] and [`m0601::protocol::deg_to_raw`].
 pub enum Setpoint {
     /// Velocity loop: signed RPM plus an acceleration byte.
     Velocity {
@@ -65,33 +65,6 @@ pub struct Plan {
     pub setpoint: Setpoint,
     /// Stop after this many seconds; `None` runs until Ctrl-C.
     pub secs: Option<f64>,
-}
-
-/// Amps → current-loop raw (`i16`), clamped to the ±32767 command range.
-///
-/// The current loop reports amps as `raw × 8 / 32767`, so this inverts that
-/// scaling. Non-finite input maps to `0`.
-pub fn amps_to_raw(amps: f32) -> i16 {
-    if !amps.is_finite() {
-        return 0;
-    }
-    let raw = (amps * 32767.0 / 8.0).round();
-    // Already near-range after the parser's ±8 A check; the clamp makes the
-    // cast total regardless of what a future caller passes.
-    raw.clamp(f32::from(CUR_MIN), f32::from(CUR_MAX)) as i16
-}
-
-/// Degrees → position-loop raw (`u16`), clamped to `0..=POS_MAX`.
-///
-/// Rounds to nearest (not truncating) so an angle read back from a drive
-/// reply round-trips. Non-finite input maps to `0`, and the clamp makes an
-/// out-of-band angle hold at an endpoint rather than wrapping.
-pub fn deg_to_raw(deg: f32) -> u16 {
-    if !deg.is_finite() {
-        return 0;
-    }
-    let frac = (deg / 360.0).clamp(0.0, 1.0);
-    (frac * f32::from(POS_MAX)).round() as u16
 }
 
 fn mode_of(sp: &Setpoint) -> Mode {
@@ -242,12 +215,8 @@ fn describe(plan: &Plan, mode: Mode) {
     };
     let what = match plan.setpoint {
         Setpoint::Velocity { rpm, accel } => format!("{rpm:+} RPM (accel {accel})"),
-        Setpoint::Current { raw } => {
-            format!("{:+.3} A (raw {raw})", f32::from(raw) * 8.0 / 32767.0)
-        }
-        Setpoint::Position { raw } => {
-            format!("{:.1}° (raw {raw})", f32::from(raw) * 360.0 / 32767.0)
-        }
+        Setpoint::Current { raw } => format!("{:+.3} A (raw {raw})", raw_to_amps(raw)),
+        Setpoint::Position { raw } => format!("{:.1}° (raw {raw})", raw_to_deg(raw)),
     };
     println!("Driving {mode} {what} {dur}. Keep the wheel clear; Ctrl-C stops and brakes.");
 }
@@ -271,9 +240,9 @@ fn print_status(fb: &Feedback, temp: Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CYCLE, Setpoint, amps_to_raw, deg_to_raw, drive_frame, mode_of};
+    use super::{CYCLE, Setpoint, drive_frame, mode_of};
     use m0601::Mode;
-    use m0601::protocol::{CUR_MAX, CUR_MIN, DRIVE_HZ_MIN, POS_MAX};
+    use m0601::protocol::DRIVE_HZ_MIN;
     use std::time::Duration;
 
     #[test]
@@ -331,46 +300,5 @@ mod tests {
             f,
             [0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x14, 0x00, 0x00, 0x9B]
         );
-    }
-
-    #[test]
-    fn amps_to_raw_inverts_the_current_scaling() {
-        assert_eq!(amps_to_raw(0.0), 0);
-        assert_eq!(amps_to_raw(8.0), CUR_MAX);
-        assert_eq!(amps_to_raw(-8.0), CUR_MIN);
-        // 1 A → round(32767/8) = 4096; back through ×8/32767 ≈ 1.0002 A.
-        assert_eq!(amps_to_raw(1.0), 4096);
-        assert_eq!(amps_to_raw(-1.0), -4096);
-    }
-
-    #[test]
-    fn amps_to_raw_clamps_and_rules_out_nan() {
-        // Beyond the ±8 A command range clamps rather than wrapping.
-        assert_eq!(amps_to_raw(100.0), CUR_MAX);
-        assert_eq!(amps_to_raw(-100.0), CUR_MIN);
-        assert_eq!(amps_to_raw(f32::NAN), 0);
-        assert_eq!(amps_to_raw(f32::INFINITY), 0);
-    }
-
-    #[test]
-    fn deg_to_raw_covers_the_full_turn_without_wrapping() {
-        assert_eq!(deg_to_raw(0.0), 0);
-        assert_eq!(deg_to_raw(360.0), POS_MAX);
-        // 180° → round(0.5 × 32767) = 16384.
-        assert_eq!(deg_to_raw(180.0), 16384);
-        // Out-of-band and non-finite inputs clamp rather than wrap or trap.
-        assert_eq!(deg_to_raw(-90.0), 0);
-        assert_eq!(deg_to_raw(720.0), POS_MAX);
-        assert_eq!(deg_to_raw(f32::NAN), 0);
-    }
-
-    #[test]
-    fn deg_to_raw_round_trips_drive_reply_angles() {
-        // A drive reply reports raw × 360/32767 degrees; converting that back
-        // must land on exactly raw so "go to this angle" is a no-op move.
-        for raw in [1u16, 1000, 16_384, 20_000, 32_766, 32_767] {
-            let deg = f32::from(raw) * 360.0 / 32_767.0;
-            assert_eq!(deg_to_raw(deg), raw, "raw {raw}");
-        }
     }
 }

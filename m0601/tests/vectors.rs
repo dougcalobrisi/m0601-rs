@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use m0601::protocol::{
-    CUR_MAX, CUR_MIN, ReplyKind, crc8_maxim, frame_brake, frame_current, frame_feedback,
+    CUR_MAX, CUR_MIN, POS_MAX, ReplyKind, crc8_maxim, frame_brake, frame_current, frame_feedback,
     frame_from_bytes, frame_id_query, frame_mode, frame_position, frame_set_id, frame_velocity,
     parse_feedback, validate_id,
 };
@@ -300,7 +300,10 @@ fn parse_feedback_drive_position_endpoints() {
 /// pins the classification for every TX frame the crate can produce.
 #[test]
 fn reply_kind_classification() {
-    assert_eq!(ReplyKind::from_tx(&frame_feedback(1)), Some(ReplyKind::Query));
+    assert_eq!(
+        ReplyKind::from_tx(&frame_feedback(1)),
+        Some(ReplyKind::Query)
+    );
     assert_eq!(
         ReplyKind::from_tx(&frame_velocity(1, 100, 1)),
         Some(ReplyKind::Drive)
@@ -315,7 +318,10 @@ fn reply_kind_classification() {
     );
     assert_eq!(ReplyKind::from_tx(&frame_brake(1)), Some(ReplyKind::Drive));
     // The broadcast ID query's command byte is 0x64 — drive layout.
-    assert_eq!(ReplyKind::from_tx(&frame_id_query()), Some(ReplyKind::Drive));
+    assert_eq!(
+        ReplyKind::from_tx(&frame_id_query()),
+        Some(ReplyKind::Drive)
+    );
     // Frames that elicit no telemetry classify as None.
     assert_eq!(ReplyKind::from_tx(&frame_mode(1, Mode::Velocity)), None);
     assert_eq!(ReplyKind::from_tx(&frame_set_id(0x05).unwrap()), None);
@@ -394,4 +400,52 @@ fn mode_conversions() {
     assert_eq!("position".parse::<Mode>().unwrap(), Mode::Position);
     assert_eq!("VELOCITY".parse::<Mode>().unwrap(), Mode::Velocity);
     assert!("sideways".parse::<Mode>().is_err());
+}
+
+// ── Unit conversions ────────────────────────────────────────────────────────
+
+#[test]
+fn deg_to_raw_round_trips_every_position_step_exactly() {
+    use m0601::protocol::{deg_to_raw, raw_to_deg};
+    // "Hold this angle" reads an angle out of a drive reply and converts it
+    // straight back to a setpoint. If that round trip is ever off by one
+    // step, entering position mode commands a small move instead of holding
+    // still — so check the whole range, not a handful of samples.
+    for raw in 0..=POS_MAX {
+        assert_eq!(deg_to_raw(raw_to_deg(raw)), raw, "raw {raw}");
+    }
+}
+
+#[test]
+fn conversions_clamp_at_the_reachable_limits() {
+    use m0601::protocol::{amps_to_raw, deg_to_raw, raw_to_amps, raw_to_deg, raw8_to_deg};
+
+    // Endpoints, spelled out rather than recomputed from the functions.
+    assert_eq!(deg_to_raw(0.0), 0);
+    assert_eq!(deg_to_raw(360.0), 32_767);
+    assert_eq!(deg_to_raw(180.0), 16_384);
+    assert_eq!(raw_to_deg(0), 0.0);
+    assert_eq!(raw_to_deg(32_767), 360.0);
+    // The 8-bit query position divides by 255, so 0xFF is a full turn.
+    assert_eq!(raw8_to_deg(0), 0.0);
+    assert_eq!(raw8_to_deg(255), 360.0);
+
+    assert_eq!(amps_to_raw(0.0), 0);
+    assert_eq!(amps_to_raw(8.0), CUR_MAX);
+    assert_eq!(amps_to_raw(-8.0), CUR_MIN);
+    assert_eq!(amps_to_raw(1.0), 4096);
+    assert_eq!(amps_to_raw(-1.0), -4096);
+    assert_eq!(raw_to_amps(0), 0.0);
+
+    // Out of band saturates; it must never wrap to the opposite extreme.
+    assert_eq!(deg_to_raw(-90.0), 0);
+    assert_eq!(deg_to_raw(1_000.0), 32_767);
+    assert_eq!(amps_to_raw(100.0), CUR_MAX);
+    assert_eq!(amps_to_raw(-100.0), CUR_MIN);
+
+    // Non-finite input must not reach an `as` cast unclamped.
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(deg_to_raw(bad), 0);
+        assert_eq!(amps_to_raw(bad), 0);
+    }
 }
