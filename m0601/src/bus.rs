@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::protocol::{
-    self, Frame, ReplyKind, frame_brake, frame_current, frame_feedback, frame_id_query,
-    frame_mode, frame_position, frame_set_id, frame_velocity, parse_feedback,
+    self, Frame, ReplyKind, frame_brake, frame_current, frame_feedback, frame_id_query, frame_mode,
+    frame_position, frame_set_id, frame_velocity, parse_feedback,
 };
 use crate::transport::{SerialTransport, Transport};
 use crate::types::{Feedback, Mode};
@@ -48,6 +48,36 @@ const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// thread panicked.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Strip a leading half-duplex TX echo and split what remains into whole
+/// frames. Returns `None` unless that is a non-empty exact multiple of
+/// [`FRAME_LEN`](protocol::FRAME_LEN).
+///
+/// # Why the length must divide evenly
+///
+/// `strip_prefix` is all-or-nothing: if the echo is short by even one byte
+/// it is not recognised, and offset 0 is then no longer a frame boundary.
+/// Parsing from there anyway yields a frame *straddling* the tail of the
+/// echo and the head of the real reply — and that garbage is not obviously
+/// garbage. It looks like telemetry, it passes the per-motor ID check
+/// (a truncated echo begins with the addressed motor's own ID, exactly as a
+/// genuine reply does), and it decodes to plausible values. Measured across
+/// every cut point, a wheel turning at 300 RPM read back as 0, 1, 258 or
+/// 512 RPM — and for seven of the nine cuts that is under the `< 10 RPM`
+/// guard callers rely on before entering position mode, which is the one
+/// place a wrong speed reading is actively dangerous.
+///
+/// A well-formed transaction is always a whole number of frames — the reply
+/// alone, or the echo plus the reply — so anything else means the stream is
+/// misaligned and none of it can be trusted. Rejecting on that costs at most
+/// one dropped reading, which every caller already tolerates.
+fn frames<'a>(tx: &[u8], rx: &'a [u8]) -> Option<std::slice::ChunksExact<'a, u8>> {
+    let rx = rx.strip_prefix(tx).unwrap_or(rx);
+    if rx.is_empty() || !rx.len().is_multiple_of(protocol::FRAME_LEN) {
+        return None;
+    }
+    Some(rx.chunks_exact(protocol::FRAME_LEN))
 }
 
 /// A shared RS485 bus: owns the transport that one or more [`M0601`] motors
@@ -141,10 +171,15 @@ impl<T: Transport> Bus<T> {
         // answer without colliding, so walk whole frames and take each one's
         // ID byte. (Scanning for any in-range byte instead would happily
         // report a leftover echo or payload byte as a motor.)
+        //
+        // `frames` also rejects a misaligned buffer outright. It has to: a
+        // partial echo shifts every chunk boundary, and chunk 0 then begins
+        // with the *query's own* destination byte 0xC8 — which is in the
+        // valid ID range. The scan would report a motor at 0xC8 that does
+        // not exist and miss the one that does.
         let query = frame_id_query();
         let resp = lock(&self.transport).send_recv(&query, BROADCAST_WAIT)?;
-        let resp = resp.strip_prefix(query.as_slice()).unwrap_or(&resp);
-        for chunk in resp.chunks_exact(protocol::FRAME_LEN) {
+        for chunk in frames(&query, &resp).into_iter().flatten() {
             if (0x01..=0xFE).contains(&chunk[0]) {
                 found.insert(chunk[0]);
             }
@@ -156,9 +191,15 @@ impl<T: Transport> Bus<T> {
                 progress(id);
                 let probe = frame_feedback(id);
                 let resp = lock(&self.transport).send_recv(&probe, self.timeout)?;
-                let resp = resp.strip_prefix(probe.as_slice()).unwrap_or(&resp);
-                // A valid reply is >=10 bytes echoing the motor's own ID first.
-                if resp.len() >= protocol::FRAME_LEN && resp[0] == id {
+                // A valid reply is a whole frame carrying the probed ID. The
+                // alignment check matters here too: the probe's own first
+                // byte *is* `id`, so a partial echo would answer every probe
+                // and report a motor at all 254 addresses.
+                if frames(&probe, &resp)
+                    .into_iter()
+                    .flatten()
+                    .any(|frame| frame[0] == id)
+                {
                     found.insert(id);
                 }
             }
@@ -190,10 +231,10 @@ impl<T: Transport> Bus<T> {
 
         let query = frame_id_query();
         let resp = lock(&self.transport).send_recv(&query, BROADCAST_WAIT)?;
-        let resp = resp.strip_prefix(query.as_slice()).unwrap_or(&resp);
-        Ok(resp
-            .chunks_exact(protocol::FRAME_LEN)
-            .map(|c| c[0])
+        Ok(frames(&query, &resp)
+            .into_iter()
+            .flatten()
+            .map(|frame| frame[0])
             .find(|b| (0x01..=0xFE).contains(b)))
     }
 
@@ -333,20 +374,21 @@ impl<T: Transport> M0601<T> {
     /// arrive as `<tx frame><telemetry>` — or as a bare `<tx frame>` when no
     /// motor answers. A genuine reply can never byte-equal the TX frame (its
     /// byte 1 is a mode value, not the command), so an exact TX prefix is
-    /// always an echo and is stripped unconditionally.
+    /// always an echo and is stripped unconditionally. A *partial* echo
+    /// cannot be stripped, and is rejected instead — see [`frames`] for why
+    /// that case is more dangerous than it looks.
     ///
     /// The ID check matters on the multi-drop bus this crate exists to
     /// support: without it, a stale frame still in the adapter's buffer, or
     /// one motor's late answer landing inside another's transaction window,
     /// would be handed back as *this* motor's telemetry — a wheel reporting
-    /// its neighbour's speed.
+    /// its neighbour's speed. When several whole frames arrive together, the
+    /// one addressed to this handle is picked out rather than the buffer
+    /// being written off because a neighbour happened to answer first.
     fn parse_reply(&self, tx: &[u8], rx: &[u8]) -> Option<Feedback> {
         let kind = ReplyKind::from_tx(tx)?;
-        let rx = rx.strip_prefix(tx).unwrap_or(rx);
-        let fb = parse_feedback(rx, kind)?;
-        if fb.id != self.id {
-            return None;
-        }
+        let fb = frames(tx, rx)?
+            .find_map(|frame| parse_feedback(frame, kind).filter(|fb| fb.id == self.id))?;
         Some(self.adjust(fb))
     }
 
@@ -354,7 +396,9 @@ impl<T: Transport> M0601<T> {
     fn adjust(&self, mut fb: Feedback) -> Feedback {
         if self.mirrored {
             fb.speed_rpm = fb.speed_rpm.saturating_neg();
-            fb.current_a = -fb.current_a;
+            // `0.0 - x` rather than `-x` so a zero current mirrors to +0.0,
+            // not the -0.0 that would print as "-0.000 A".
+            fb.current_a = 0.0 - fb.current_a;
         }
         fb
     }
@@ -413,11 +457,17 @@ impl<T: Transport> M0601<T> {
 
     /// Send one velocity drive frame with an explicit acceleration.
     ///
-    /// `accel` is in units of 1 RPM per 0.1 ms; `0` selects the motor's
-    /// default and `1` — what [`drive_velocity`](Self::drive_velocity) uses
-    /// — is the *fastest* ramp, not a gentle one. A large step at `accel: 1`
-    /// draws a current spike that can trip the motor's 3 A bus-overcurrent
-    /// protection on a loaded wheel; raise the value to ramp more gently.
+    /// `0` selects the motor's default; `1` — what
+    /// [`drive_velocity`](Self::drive_velocity) uses — is the *fastest*
+    /// ramp, not a gentle one, and larger values ramp more gently. A large
+    /// step at `accel: 1` draws a current spike that can trip the motor's
+    /// 3 A bus-overcurrent protection on a loaded wheel; raise the value to
+    /// soften it.
+    ///
+    /// The vendor sources also give this byte a unit ("1 RPM per 0.1 ms")
+    /// that reads as a rate, which contradicts the ramp direction above.
+    /// That contradiction is unresolved, so only the direction is documented
+    /// — see [`frame_velocity`].
     pub fn drive_velocity_accel(&mut self, rpm: i16, accel: u8) -> Result<()> {
         let rpm = if self.mirrored {
             rpm.saturating_neg()
