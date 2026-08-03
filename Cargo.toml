@@ -5,6 +5,9 @@ members = ["m0601", "m0601-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Let-chains (`if let ... && let ...`) are used in the CLI's drive and poll
+# loops; those are stable from 1.88, which is above edition 2024's own 1.85.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/dougcalobrisi/m0601-rs-test"
 

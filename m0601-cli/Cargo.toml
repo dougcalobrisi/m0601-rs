@@ -3,6 +3,7 @@ name = "m0601-cli"
 description = "Control tool for the DFRobot M0601 (FIT1042) hub motor over RS485"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
