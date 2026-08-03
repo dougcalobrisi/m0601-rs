@@ -377,23 +377,11 @@ fn hold_position(shared: &Shared) -> Option<f32> {
     Some(deg)
 }
 
-/// Degrees to a position setpoint in `0..=POS_MAX`.
-///
-/// Clamps rather than wrapping: an angle slightly past 360° should hold at
-/// the top of the range, not snap round to 0° and drive a full revolution.
-///
-/// Rounds to nearest so that a hi-res drive-reply angle (`raw` × 360/32767)
-/// round-trips back to exactly `raw` — truncating instead can land one step
-/// low and make "hold this angle" command a (sub-perceptible) move.
+/// Degrees to a position setpoint, widened to the `i32` that [`CmdState`]
+/// carries. Clamping, rounding and NaN handling all live in
+/// [`m0601::protocol::deg_to_raw`].
 pub fn deg_to_raw(deg: f32) -> i32 {
-    // `f32::clamp` propagates NaN rather than clamping it, so rule NaN out
-    // explicitly instead of leaning on the `as` cast's NaN-to-zero rule.
-    if !deg.is_finite() {
-        return 0;
-    }
-    let frac = (deg / 360.0).clamp(0.0, 1.0);
-    // Saturating cast of an already-clamped value: cannot wrap or trap.
-    (frac * f32::from(m0601::protocol::POS_MAX)).round() as i32
+    i32::from(m0601::protocol::deg_to_raw(deg))
 }
 
 fn quit(shared: &Shared) {

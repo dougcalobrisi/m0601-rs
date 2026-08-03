@@ -275,6 +275,104 @@ pub fn frame_from_bytes(bytes: &[u8]) -> Result<Frame> {
     }
 }
 
+/// Full-scale torque current in amps, at [`CUR_MAX`] (and −[`CUR_MAX`]).
+pub const CUR_FULL_SCALE_A: f32 = 8.0;
+
+/// Raw current value → amps (`raw × 8 / 32767`).
+///
+/// ```
+/// use m0601::protocol::raw_to_amps;
+/// assert_eq!(raw_to_amps(0), 0.0);
+/// assert!((raw_to_amps(32767) - 8.0).abs() < 1e-6);
+/// assert!((raw_to_amps(-4096) + 1.0).abs() < 1e-3);
+/// ```
+pub fn raw_to_amps(raw: i16) -> f32 {
+    f32::from(raw) * CUR_FULL_SCALE_A / f32::from(CUR_MAX)
+}
+
+/// Amps → raw current setpoint, clamped to [`CUR_MIN`]`..=`[`CUR_MAX`].
+///
+/// Inverts [`raw_to_amps`], rounding to nearest. Non-finite input maps to
+/// `0` — `f32::clamp` propagates NaN rather than clamping it, so it is ruled
+/// out here instead of relying on the `as` cast's NaN-to-zero rule.
+///
+/// ```
+/// use m0601::protocol::{amps_to_raw, CUR_MAX, CUR_MIN};
+/// assert_eq!(amps_to_raw(0.0), 0);
+/// assert_eq!(amps_to_raw(8.0), CUR_MAX);
+/// assert_eq!(amps_to_raw(1.0), 4096);
+/// // Beyond the reachable range it saturates rather than wrapping.
+/// assert_eq!(amps_to_raw(100.0), CUR_MAX);
+/// assert_eq!(amps_to_raw(-100.0), CUR_MIN);
+/// assert_eq!(amps_to_raw(f32::NAN), 0);
+/// ```
+pub fn amps_to_raw(amps: f32) -> i16 {
+    if !amps.is_finite() {
+        return 0;
+    }
+    let raw = (amps * f32::from(CUR_MAX) / CUR_FULL_SCALE_A).round();
+    // Clamped before the cast, so the conversion is total.
+    raw.clamp(f32::from(CUR_MIN), f32::from(CUR_MAX)) as i16
+}
+
+/// 16-bit position → degrees (`raw × 360 / 32767`), as carried by a
+/// [`ReplyKind::Drive`] reply.
+///
+/// ```
+/// use m0601::protocol::raw_to_deg;
+/// assert_eq!(raw_to_deg(0), 0.0);
+/// assert_eq!(raw_to_deg(32767), 360.0);
+/// ```
+pub fn raw_to_deg(raw: u16) -> f32 {
+    f32::from(raw) * 360.0 / f32::from(POS_MAX)
+}
+
+/// 8-bit position → degrees (`raw × 360 / 255`), as carried by a
+/// [`ReplyKind::Query`] reply.
+///
+/// The divisor is **255**, not 256, so `0xFF` reads as a full 360° (i.e. 0°,
+/// wrapped); every known implementation divides by 255.
+///
+/// ```
+/// use m0601::protocol::raw8_to_deg;
+/// assert_eq!(raw8_to_deg(0), 0.0);
+/// assert_eq!(raw8_to_deg(255), 360.0);
+/// ```
+pub fn raw8_to_deg(raw: u8) -> f32 {
+    f32::from(raw) * 360.0 / 255.0
+}
+
+/// Degrees → raw position setpoint, clamped to `0..=`[`POS_MAX`].
+///
+/// Clamps rather than wrapping: an angle slightly past 360° should hold at
+/// the top of the range, not snap round to 0° and drive a full revolution.
+/// Non-finite input maps to `0`.
+///
+/// Rounds to nearest, so an angle read back from a drive reply round-trips
+/// to exactly the value it came from — truncating instead can land one step
+/// low and turn "hold this angle" into a command to move.
+///
+/// ```
+/// use m0601::protocol::{deg_to_raw, raw_to_deg, POS_MAX};
+/// assert_eq!(deg_to_raw(0.0), 0);
+/// assert_eq!(deg_to_raw(180.0), 16_384);
+/// assert_eq!(deg_to_raw(360.0), POS_MAX);
+/// // Out-of-band and non-finite inputs clamp rather than wrap or trap.
+/// assert_eq!(deg_to_raw(-90.0), 0);
+/// assert_eq!(deg_to_raw(720.0), POS_MAX);
+/// assert_eq!(deg_to_raw(f32::NAN), 0);
+/// // Round-trips exactly.
+/// assert_eq!(deg_to_raw(raw_to_deg(20_000)), 20_000);
+/// ```
+pub fn deg_to_raw(deg: f32) -> u16 {
+    if !deg.is_finite() {
+        return 0;
+    }
+    let frac = (deg / 360.0).clamp(0.0, 1.0);
+    // Saturating cast of an already-clamped value: cannot wrap or trap.
+    (frac * f32::from(POS_MAX)).round() as u16
+}
+
 /// Which command elicited a telemetry reply — and therefore how its
 /// bytes 6–7 must be decoded.
 ///
@@ -365,18 +463,15 @@ pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
     // The vendor sample and the navigation_robot C driver both decode the
     // drive-reply position as an unsigned 16-bit value (range 0..=32767).
     let (temp_c, position_deg) = match kind {
-        ReplyKind::Query => (Some(raw[6]), f32::from(raw[7]) * 360.0 / 255.0),
-        ReplyKind::Drive => (
-            None,
-            f32::from(u16::from_be_bytes([raw[6], raw[7]])) * 360.0 / 32767.0,
-        ),
+        ReplyKind::Query => (Some(raw[6]), raw8_to_deg(raw[7])),
+        ReplyKind::Drive => (None, raw_to_deg(u16::from_be_bytes([raw[6], raw[7]]))),
     };
     Some(Feedback {
         id: raw[0],
         kind,
         mode: Mode::from_byte(raw[1]),
         mode_raw: raw[1],
-        current_a: f32::from(current_raw) * 8.0 / 32767.0,
+        current_a: raw_to_amps(current_raw),
         speed_rpm: i16::from_be_bytes([raw[4], raw[5]]),
         temp_c,
         position_deg,
