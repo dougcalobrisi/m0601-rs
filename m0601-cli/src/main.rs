@@ -57,8 +57,13 @@ enum Cmd {
     /// Full-screen dashboard with keyboard control
     Control {
         /// Preset speed for F/B keys, -330..=330
-        #[arg(long, default_value_t = 100, value_parser = parse_rpm)]
+        #[arg(long, default_value_t = 100, value_parser = parse_rpm, allow_hyphen_values = true)]
         rpm: i16,
+    },
+    /// Drive one mode at a fixed setpoint (scriptable; Ctrl-C or --secs stops)
+    Drive {
+        #[command(subcommand)]
+        mode: DriveMode,
     },
     /// Change a motor's RS485 ID (persistent, one motor only)
     SetId {
@@ -73,6 +78,42 @@ enum Cmd {
     Raw {
         /// Hex bytes, e.g. "01 74 00 00 00 00 00 00 00"
         hex: String,
+    },
+}
+
+/// The three motor modes, each with its own natural units. `--secs` bounds
+/// the run; omit it to drive until Ctrl-C.
+#[derive(Subcommand)]
+enum DriveMode {
+    /// Velocity loop: hold an RPM setpoint
+    Velocity {
+        /// Target speed, -330..=330 RPM
+        #[arg(long, value_parser = parse_rpm, allow_hyphen_values = true)]
+        rpm: i16,
+        /// Acceleration byte: 1 = fastest ramp, 0 = motor default
+        #[arg(long, default_value_t = 1)]
+        accel: u8,
+        /// Stop after this many seconds (default: until Ctrl-C)
+        #[arg(long, value_parser = parse_seconds)]
+        secs: Option<f64>,
+    },
+    /// Current loop: hold a torque-current setpoint
+    Current {
+        /// Target current, about -8.0..=8.0 A
+        #[arg(long, value_parser = parse_amps, allow_hyphen_values = true)]
+        amps: f32,
+        /// Stop after this many seconds (default: until Ctrl-C)
+        #[arg(long, value_parser = parse_seconds)]
+        secs: Option<f64>,
+    },
+    /// Position loop: rotate to an absolute angle and hold it (needs <10 RPM)
+    Position {
+        /// Target angle, 0.0..=360.0 degrees
+        #[arg(long, value_parser = parse_deg)]
+        deg: f32,
+        /// Hold for this many seconds (default: until Ctrl-C)
+        #[arg(long, value_parser = parse_seconds)]
+        secs: Option<f64>,
     },
 }
 
@@ -124,6 +165,37 @@ fn parse_rpm(s: &str) -> Result<i16, String> {
     Ok(v)
 }
 
+/// A torque-current setpoint in amps. The current loop maps ±32767 to about
+/// ±8 A, so anything beyond ±8 A is unreachable and rejected up front.
+fn parse_amps(s: &str) -> Result<f32, String> {
+    let v: f32 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid number {s:?}"))?;
+    if !v.is_finite() {
+        return Err(format!("{s:?} is not a finite number"));
+    }
+    if !(-8.0..=8.0).contains(&v) {
+        return Err(format!("{v} is out of range (-8.0..=8.0 A)"));
+    }
+    Ok(v)
+}
+
+/// An absolute angle in degrees for position mode (single-turn, 0..=360).
+fn parse_deg(s: &str) -> Result<f32, String> {
+    let v: f32 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid number {s:?}"))?;
+    if !v.is_finite() {
+        return Err(format!("{s:?} is not a finite number"));
+    }
+    if !(0.0..=360.0).contains(&v) {
+        return Err(format!("{v} is out of range (0.0..=360.0 deg)"));
+    }
+    Ok(v)
+}
+
 /// `int(s, 0)` equivalent: `0x`/`0o`/`0b` prefixes or plain decimal.
 fn parse_int_auto(s: &str) -> Result<u8, String> {
     let s = s.trim();
@@ -147,6 +219,27 @@ fn main() -> ExitCode {
         Cmd::Info => cmd::info::run(&cli.port, cli.id, timeout),
         Cmd::Monitor { hz, csv } => cmd::monitor::run(&cli.port, cli.id, timeout, hz, csv),
         Cmd::Control { rpm } => cmd::control::run(&cli.port, cli.id, rpm),
+        Cmd::Drive { mode } => {
+            let plan = match mode {
+                DriveMode::Velocity { rpm, accel, secs } => cmd::drive::Plan {
+                    setpoint: cmd::drive::Setpoint::Velocity { rpm, accel },
+                    secs,
+                },
+                DriveMode::Current { amps, secs } => cmd::drive::Plan {
+                    setpoint: cmd::drive::Setpoint::Current {
+                        raw: cmd::drive::amps_to_raw(amps),
+                    },
+                    secs,
+                },
+                DriveMode::Position { deg, secs } => cmd::drive::Plan {
+                    setpoint: cmd::drive::Setpoint::Position {
+                        raw: cmd::drive::deg_to_raw(deg),
+                    },
+                    secs,
+                },
+            };
+            cmd::drive::run(&cli.port, cli.id, timeout, plan)
+        }
         Cmd::SetId { new, yes } => cmd::set_id::run(&cli.port, timeout, new, yes),
         Cmd::Raw { hex } => cmd::raw::run(&cli.port, cli.id, timeout, &hex),
     };
@@ -208,6 +301,26 @@ mod tests {
         assert_eq!(parse_rpm("330"), Ok(330));
         assert_eq!(parse_rpm("-330"), Ok(-330));
         assert_eq!(parse_rpm("0"), Ok(0));
+    }
+
+    #[test]
+    fn rejects_amps_outside_the_current_range() {
+        for bad in ["inf", "NaN", "8.1", "-8.1", "100"] {
+            assert!(super::parse_amps(bad).is_err(), "{bad} must be rejected");
+        }
+        assert_eq!(super::parse_amps("1.5"), Ok(1.5));
+        assert_eq!(super::parse_amps("-8"), Ok(-8.0));
+        assert_eq!(super::parse_amps("0"), Ok(0.0));
+    }
+
+    #[test]
+    fn rejects_degrees_outside_a_single_turn() {
+        for bad in ["inf", "NaN", "-0.1", "360.1", "720"] {
+            assert!(super::parse_deg(bad).is_err(), "{bad} must be rejected");
+        }
+        assert_eq!(super::parse_deg("0"), Ok(0.0));
+        assert_eq!(super::parse_deg("180.5"), Ok(180.5));
+        assert_eq!(super::parse_deg("360"), Ok(360.0));
     }
 
     #[test]

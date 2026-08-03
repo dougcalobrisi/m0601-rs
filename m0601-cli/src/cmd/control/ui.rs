@@ -13,6 +13,7 @@ use crossterm::{cursor::MoveTo, queue};
 use m0601::Mode;
 
 use super::state::{CmdState, ModeRequest, Shared, lock};
+use crate::cmd::POSITION_ENTRY_RPM;
 
 const RPM_MIN: i32 = m0601::protocol::RPM_MIN as i32;
 const RPM_MAX: i32 = m0601::protocol::RPM_MAX as i32;
@@ -112,10 +113,15 @@ fn draw(out: &mut impl Write, shared: &Shared, port: &str, id: u8) -> io::Result
             MoveTo(4, 4),
             Print(format!("Current  : {:+7.3} A", fb.current_a))
         )?;
+        // Prefer the hi-res angle retained from drive replies; without it the
+        // coarse 8-bit position in the every-10th-cycle query reply would make
+        // this reading flicker between resolutions. Falls back to this reply's
+        // own position until the first drive reply lands.
+        let position = telemetry.position_deg.unwrap_or(fb.position_deg);
         queue!(
             out,
             MoveTo(4, 5),
-            Print(format!("Position : {:6.1} deg", fb.position_deg))
+            Print(format!("Position : {position:6.1} deg"))
         )?;
         // Temperature arrives only in the every-10th-cycle 0x74 reply;
         // `telemetry.temp_c` holds the last one seen. "--" until the first.
@@ -268,8 +274,9 @@ fn handle_key(shared: &Shared, code: KeyCode, modifiers: KeyModifiers, preset_rp
                     drop(cmd);
                     match hold_position(shared) {
                         Some(deg) => shared.set_msg(format!("Holding {deg:.1} deg")),
-                        None => shared
-                            .set_msg("No telemetry — cannot hold position; press V to stop"),
+                        None => {
+                            shared.set_msg("No telemetry — cannot hold position; press V to stop")
+                        }
                     }
                 }
             }
@@ -302,26 +309,28 @@ fn handle_key(shared: &Shared, code: KeyCode, modifiers: KeyModifiers, preset_rp
         }
         KeyCode::Char('p' | 'P') => {
             drop(cmd);
-            // Protocol guard: position mode requires <10 RPM. Fail CLOSED —
-            // no telemetry means the speed is unknown, not that it is zero,
-            // and `is_some_and` on None would have read as "not too fast"
-            // and let the switch through on a bus whose RX path is dead.
+            // Protocol guard: position mode requires <10 RPM, and it fails
+            // closed on missing telemetry — see `position_entry_allowed`,
+            // which the batch `drive position` path shares.
             let speed = lock(&shared.telemetry).fb.map(|fb| fb.speed_rpm);
-            match speed {
-                None => shared.set_msg("Refused: no telemetry — cannot confirm <10 RPM"),
-                Some(rpm) if rpm.abs() >= 10 => shared.set_msg(format!(
-                    "Refused: {rpm} RPM — must be under 10 RPM for POSITION mode"
-                )),
-                Some(_) => {
-                    lock(&shared.cmd).mode_request = Some(ModeRequest {
-                        mode: Mode::Position,
-                        target: None, // poll thread seeds the present angle
-                    });
-                    // The poll thread seeds the target with the wheel's
-                    // present angle, so entering position mode holds still
-                    // rather than driving to 0 deg.
-                    shared.set_msg("Switching to POSITION (holding current angle)");
+            if !crate::cmd::position_entry_allowed(speed) {
+                match speed {
+                    None => shared.set_msg(format!(
+                        "Refused: no telemetry — cannot confirm <{POSITION_ENTRY_RPM} RPM"
+                    )),
+                    Some(rpm) => shared.set_msg(format!(
+                        "Refused: {rpm} RPM — must be under {POSITION_ENTRY_RPM} RPM for POSITION mode"
+                    )),
                 }
+            } else {
+                lock(&shared.cmd).mode_request = Some(ModeRequest {
+                    mode: Mode::Position,
+                    target: None, // poll thread seeds the present angle
+                });
+                // The poll thread seeds the target with the wheel's present
+                // angle, so entering position mode holds still rather than
+                // driving to 0 deg.
+                shared.set_msg("Switching to POSITION (holding current angle)");
             }
         }
         _ => {}
@@ -399,11 +408,11 @@ fn quit(shared: &Shared) {
 
 #[cfg(test)]
 mod tests {
-    use super::{RPM_MAX, deg_to_raw, handle_key};
+    use super::{RPM_MAX, deg_to_raw, draw, handle_key};
     use crate::cmd::control::state::{Shared, lock};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use m0601::protocol::ReplyKind;
     use m0601::Mode;
+    use m0601::protocol::ReplyKind;
 
     const NONE: KeyModifiers = KeyModifiers::NONE;
 
@@ -442,7 +451,11 @@ mod tests {
         let cmd = *lock(&shared.cmd);
         let req = cmd.mode_request.expect("F must queue a 0xA0 mode switch");
         assert_eq!(req.mode, Mode::Velocity);
-        assert_eq!(req.target, Some(100), "setpoint rides along with the switch");
+        assert_eq!(
+            req.target,
+            Some(100),
+            "setpoint rides along with the switch"
+        );
         // Crucially, our own idea of the mode has NOT moved yet: the motor
         // is still in current mode until the poll thread sends the frames.
         assert_eq!(cmd.mode, Mode::Current);
@@ -467,7 +480,10 @@ mod tests {
         press(&shared, 's');
 
         let target = lock(&shared.cmd).target;
-        assert_ne!(target, 0, "target 0 in position mode means 'drive to 0 deg'");
+        assert_ne!(
+            target, 0,
+            "target 0 in position mode means 'drive to 0 deg'"
+        );
         // It holds the reported angle instead.
         assert_eq!(target, deg_to_raw(128.0 * 360.0 / 255.0));
     }
@@ -551,7 +567,10 @@ mod tests {
         assert_eq!(deg_to_raw(-90.0), 0);
         assert_eq!(deg_to_raw(1_000.0), 32_767);
         assert_eq!(deg_to_raw(f32::NAN), 0);
-        assert!((0..=32_767).contains(&deg_to_raw(180.0)));
+        // Pin the midpoint, don't just assert it lands somewhere in range:
+        // `deg_to_raw` clamps before scaling, so a range check here holds for
+        // every possible input and would survive any scaling bug.
+        assert_eq!(deg_to_raw(180.0), 16_384);
     }
 
     #[test]
@@ -563,6 +582,62 @@ mod tests {
             let deg = f32::from(raw) * 360.0 / 32_767.0;
             assert_eq!(deg_to_raw(deg), i32::from(raw), "raw {raw}");
         }
+    }
+
+    /// Render the dashboard into a buffer and return it as text.
+    fn render(shared: &Shared) -> String {
+        let mut out = Vec::new();
+        draw(&mut out, shared, "/dev/ttyUSB0", 0x01).expect("render into a Vec cannot fail");
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn braking_is_shown_only_when_the_motor_reports_velocity_mode() {
+        // The brake byte is honoured only in velocity mode. Showing BRAKING
+        // on the strength of our own request is how a "brake" key ends up
+        // freewheeling a wheel while the screen insists it is braking.
+        let shared = Shared::new();
+        lock(&shared.cmd).brake = true;
+        seed(&shared, 0x01, 0); // motor reports CURRENT
+        assert!(
+            !render(&shared).contains("BRAKING"),
+            "claimed BRAKING while the motor was in current mode"
+        );
+
+        // Same flag, but now the motor confirms velocity mode.
+        let shared = Shared::new();
+        lock(&shared.cmd).brake = true;
+        seed(&shared, 0x02, 0); // motor reports VELOCITY
+        assert!(render(&shared).contains("BRAKING"));
+    }
+
+    #[test]
+    fn a_mode_disagreement_is_surfaced_not_hidden() {
+        // We think velocity; the motor says position. The operator has to be
+        // able to see that, because a setpoint means something different in
+        // each mode.
+        let shared = Shared::new();
+        seed(&shared, 0x03, 0);
+        let out = render(&shared);
+        assert!(out.contains("VELOCITY"), "requested mode missing");
+        assert!(out.contains("POSITION"), "motor's actual mode missing");
+
+        // When they agree, only the one mode is named.
+        let shared = Shared::new();
+        seed(&shared, 0x02, 0);
+        let out = render(&shared);
+        assert!(out.contains("VELOCITY"));
+        assert!(!out.contains("motor:"), "no disagreement to report");
+    }
+
+    #[test]
+    fn telemetry_is_awaited_rather_than_invented() {
+        // Nothing has replied yet: the dashboard must say so instead of
+        // rendering a default-looking 0 RPM / 0 A readout.
+        let shared = Shared::new();
+        let out = render(&shared);
+        assert!(out.contains("Waiting for telemetry"));
+        assert!(!out.contains("STATIONARY"));
     }
 
     #[test]
