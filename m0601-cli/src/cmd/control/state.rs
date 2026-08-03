@@ -7,7 +7,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use m0601::{Feedback, Mode};
+use m0601::{Feedback, Mode, ReplyKind};
 
 /// A queued mode switch, serviced by the poll thread (`set_mode` sends five
 /// frames and must not run on the UI thread — it doesn't own the port).
@@ -45,26 +45,37 @@ pub struct CmdState {
     pub mode_request: Option<ModeRequest>,
 }
 
-/// Latest telemetry plus the last-known winding temperature.
+/// Latest telemetry, plus the readings that only one reply layout carries
+/// and must be retained across the replies that don't.
 ///
-/// Drive replies (49 cycles in 50) carry no temperature — bytes 6–7 are a
-/// 16-bit position in that layout — so the last temperature seen in a 0x74
-/// query reply is retained separately rather than faked into a [`Feedback`]
-/// whose raw frame never contained it.
+/// The 50 Hz loop gets a drive reply every cycle (hi-res 16-bit position, no
+/// temperature) and an extra 0x74 query reply only every 10th cycle
+/// (temperature + a coarse 8-bit position). So the winding temperature and
+/// the hi-res angle each come from a *different* reply layout; each is kept
+/// apart from `fb` rather than flickering as `fb` alternates between the two.
 #[derive(Clone, Copy, Default)]
 pub struct Telemetry {
-    /// Most recent reply of either kind.
+    /// Most recent reply of either kind — the source of mode, speed, current
+    /// and faults, which decode identically in both layouts.
     pub fb: Option<Feedback>,
-    /// Winding temperature from the most recent query reply.
+    /// Winding temperature from the most recent query (0x74) reply.
     pub temp_c: Option<u8>,
+    /// Wheel angle from the most recent *drive* reply (hi-res 16-bit). Held
+    /// apart from `fb` so the every-10th-cycle query reply's coarse 8-bit
+    /// angle doesn't make the displayed position flicker between resolutions.
+    pub position_deg: Option<f32>,
 }
 
 impl Telemetry {
-    /// Store `fb` as latest, refreshing the retained temperature when the
-    /// reply carries one.
+    /// Store `fb` as latest, and separately retain the readings only one
+    /// layout carries: temperature (query replies) and the hi-res angle
+    /// (drive replies).
     pub fn absorb(&mut self, fb: Feedback) {
         if let Some(t) = fb.temp_c {
             self.temp_c = Some(t);
+        }
+        if fb.kind == ReplyKind::Drive {
+            self.position_deg = Some(fb.position_deg);
         }
         self.fb = Some(fb);
     }
@@ -118,8 +129,7 @@ mod tests {
 
     /// The same reply bytes decoded as either kind (temp 40 °C as a query).
     fn fb(kind: ReplyKind) -> Feedback {
-        parse_feedback(&[0x01, 0x02, 0, 0, 0, 0x64, 0x28, 0x80, 0, 0], kind)
-            .expect("valid frame")
+        parse_feedback(&[0x01, 0x02, 0, 0, 0, 0x64, 0x28, 0x80, 0, 0], kind).expect("valid frame")
     }
 
     #[test]
@@ -133,5 +143,25 @@ mod tests {
         assert_eq!(t.temp_c, Some(40), "a drive reply must not clear it");
         // fb always tracks the latest reply of either kind.
         assert_eq!(t.fb.map(|fb| fb.kind), Some(ReplyKind::Drive));
+    }
+
+    #[test]
+    fn absorb_keeps_hi_res_drive_angle_across_a_query_reply() {
+        let mut t = Telemetry::default();
+        // A query reply before any drive reply: no hi-res angle retained yet
+        // (the UI falls back to the reply's own coarse position meanwhile).
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(t.position_deg, None, "no hi-res drive reply seen yet");
+        // A drive reply establishes the hi-res angle...
+        t.absorb(fb(ReplyKind::Drive));
+        let hi_res = t.position_deg.expect("drive reply sets the hi-res angle");
+        // ...and a later query reply must NOT overwrite it with its coarse
+        // 8-bit angle — that flicker is exactly what this field prevents.
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(
+            t.position_deg,
+            Some(hi_res),
+            "a query reply must not downgrade the retained hi-res angle"
+        );
     }
 }

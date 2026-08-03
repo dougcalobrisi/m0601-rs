@@ -11,8 +11,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use m0601::protocol::{
-    CUR_MAX, CUR_MIN, Frame, POS_MAX, RPM_MAX, RPM_MIN, frame_brake, frame_current,
-    frame_feedback, frame_position, frame_velocity,
+    CUR_MAX, CUR_MIN, Frame, POS_MAX, RPM_MAX, RPM_MIN, frame_brake, frame_current, frame_feedback,
+    frame_position, frame_velocity,
 };
 use m0601::{M0601, Mode};
 
@@ -45,9 +45,11 @@ pub fn run(mut motor: M0601, shared: Arc<Shared>) {
 fn active_frame(id: u8, cmd: &CmdState) -> Frame {
     match cmd.mode {
         Mode::Velocity if cmd.brake => frame_brake(id),
-        Mode::Velocity => {
-            frame_velocity(id, cmd.target.clamp(RPM_MIN.into(), RPM_MAX.into()) as i16, 1)
-        }
+        Mode::Velocity => frame_velocity(
+            id,
+            cmd.target.clamp(RPM_MIN.into(), RPM_MAX.into()) as i16,
+            1,
+        ),
         Mode::Current => frame_current(id, cmd.target.clamp(CUR_MIN.into(), CUR_MAX.into()) as i16),
         Mode::Position => frame_position(id, cmd.target.clamp(0, POS_MAX.into()) as u16),
     }
@@ -123,5 +125,125 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
         if next < now {
             next = now + CYCLE; // fell behind — re-anchor instead of bursting
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CYCLE, active_frame};
+    use crate::cmd::control::state::CmdState;
+    use m0601::Mode;
+    use m0601::protocol::DRIVE_HZ_MIN;
+    use std::time::Duration;
+
+    fn cmd(mode: Mode, target: i32, brake: bool) -> CmdState {
+        CmdState {
+            mode,
+            target,
+            brake,
+            mode_request: None,
+        }
+    }
+
+    #[test]
+    fn the_cycle_honours_the_protocol_drive_rate() {
+        // CYCLE is a hardcoded 20 ms and DRIVE_HZ_MIN is the protocol floor
+        // it exists to satisfy; nothing else ties the two together, so
+        // raising the constant would silently under-drive the motor.
+        let slowest_allowed = Duration::from_secs(1) / DRIVE_HZ_MIN;
+        assert!(
+            CYCLE <= slowest_allowed,
+            "{CYCLE:?} per cycle is below the {DRIVE_HZ_MIN} Hz floor ({slowest_allowed:?})"
+        );
+    }
+
+    #[test]
+    fn each_mode_sends_its_own_kind_of_drive_frame() {
+        // Literal wire bytes — recomputing these with the frame builders
+        // would assert the builders against themselves.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Velocity, 100, false)),
+            [0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0xE4]
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Current, 4096, false)),
+            [0x01, 0x64, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB]
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Position, 16_384, false)),
+            [0x01, 0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97]
+        );
+    }
+
+    #[test]
+    fn brake_is_only_honoured_in_velocity_mode() {
+        // The brake byte does nothing outside velocity mode, so a brake flag
+        // set there must not suppress the real setpoint — the wheel would
+        // coast while the dashboard said BRAKING.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Velocity, 100, true)),
+            [0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1],
+            "velocity + brake must send the brake frame"
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Current, 4096, true)),
+            [0x01, 0x64, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB],
+            "a stale brake flag must not replace the current setpoint"
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Position, 16_384, true)),
+            [0x01, 0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97],
+            "a stale brake flag must not replace the position setpoint"
+        );
+    }
+
+    #[test]
+    fn out_of_range_targets_clamp_rather_than_wrap() {
+        // `target` is an i32 narrowed with `as` per mode, so the clamp is
+        // what stops the cast truncating. These two cases are the ones
+        // where it is load-bearing — delete the clamp and they fail.
+        //
+        // A negative position: `-5i32 as u16` is 65531, which frame_position
+        // then floors to POS_MAX, putting a full 360 deg on the wire in
+        // place of 0.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Position, -5, false)),
+            [0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50],
+            "a negative position must clamp to 0, not land on a full turn"
+        );
+        // A current beyond i16: `99_999i32 as i16` is -31073, so the cast
+        // flips the sign and commands near-full-scale torque the *other*
+        // way. Nothing downstream catches that — -31073 is in range.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Current, 99_999, false)),
+            [0x01, 0x64, 0x7F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97],
+            "an over-range current must saturate, not wrap to full reverse"
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Current, -99_999, false)),
+            [0x01, 0x64, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0]
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Position, 99_999, false)),
+            [0x01, 0x64, 0x7F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97]
+        );
+        // Velocity is belt-and-braces: 5000 fits in i16, so the cast cannot
+        // truncate, and frame_velocity clamps to RPM_MAX regardless. These
+        // two pin the behaviour but would still pass with the clamp gone —
+        // they document intent, they do not guard it.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Velocity, 5_000, false)),
+            [0x01, 0x64, 0x01, 0x4A, 0x00, 0x00, 0x01, 0x00, 0x00, 0x7C]
+        );
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Velocity, -5_000, false)),
+            [0x01, 0x64, 0xFE, 0xB6, 0x00, 0x00, 0x01, 0x00, 0x00, 0x75]
+        );
+    }
+
+    #[test]
+    fn the_frame_is_addressed_to_the_handles_own_motor() {
+        assert_eq!(active_frame(0x2A, &cmd(Mode::Velocity, 0, false))[0], 0x2A);
+        assert_eq!(active_frame(0x2A, &cmd(Mode::Velocity, 0, true))[0], 0x2A);
     }
 }

@@ -110,7 +110,11 @@ fn reply_checksum_capture() {
             "{label}: {} — byte 9 = 0x{:02X}, CRC-8/MAXIM(bytes 0..9) = 0x{crc:02X} → {}",
             hex.join(" "),
             frame[9],
-            if frame[9] == crc { "MATCHES" } else { "DIFFERS" },
+            if frame[9] == crc {
+                "MATCHES"
+            } else {
+                "DIFFERS"
+            },
         );
     };
 
@@ -145,10 +149,17 @@ impl Drop for StopOnDrop {
 #[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
 fn spin_and_stop() {
     let _guard = port_guard();
-    if std::env::var("M0601_ALLOW_MOTION").as_deref() != Ok("1") {
-        eprintln!("skipping: M0601_ALLOW_MOTION=1 not set");
-        return;
-    }
+    // Fail rather than return: a silent `return` here reports `ok`, which is
+    // indistinguishable from the wheel having actually spun up and stopped.
+    // This test is already `#[ignore]`d, so reaching this line means someone
+    // opted in with `--ignored` — tell them why nothing moved.
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "spin_and_stop moves the wheel; set M0601_ALLOW_MOTION=1 to allow it \
+         (make sure the wheel is off the ground), or deselect this test with \
+         `--skip spin_and_stop`"
+    );
     let mut guard = StopOnDrop(Some(open()));
     let m = guard.0.as_mut().expect("just constructed");
 
