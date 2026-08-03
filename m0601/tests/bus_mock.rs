@@ -5,9 +5,7 @@
 
 use std::time::Duration;
 
-use m0601::protocol::{
-    ReplyKind, frame_brake, frame_feedback, frame_id_query, frame_mode, frame_velocity,
-};
+use m0601::protocol::{ReplyKind, frame_feedback, frame_id_query, frame_mode, frame_velocity};
 use m0601::{Bus, Error, M0601, MockTransport, Mode};
 
 const TIMEOUT: Duration = Duration::from_millis(150);
@@ -141,9 +139,11 @@ fn query_accepts_only_its_own_id_on_a_shared_bus() {
 
 #[test]
 fn query_ignores_partial_echo_rather_than_parsing_it() {
-    // A half-buffered echo can't be matched by strip_prefix. The remaining
-    // bytes are the tail of our own query frame, not telemetry — and its
-    // byte 0 is not the motor ID, so the ID check rejects it.
+    // A half-buffered echo can't be matched by strip_prefix, so what is left
+    // is not frame-aligned and must be rejected on that alone. The ID check
+    // is no help here: a truncated echo starts with byte 0 of our own TX
+    // frame, which is the addressed motor's ID — the very value the ID check
+    // is looking for.
     let mut m = motor(MockTransport {
         echo_tx: true,
         echo_truncate: Some(4),
@@ -220,6 +220,50 @@ fn scan_ignores_collision_garbage_but_keeps_clean_frames() {
     resp.extend(telemetry(0x2A));
     let bus = Bus::with_transport(MockTransport::with_replies([resp]), TIMEOUT);
     assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+}
+
+#[test]
+fn scan_partial_echo_reports_nothing_rather_than_a_phantom() {
+    // Same misalignment hazard as parse_reply, with a nastier payload: the
+    // ID-query frame's own destination byte is 0xC8, which is a valid motor
+    // ID. A truncated echo shifts every chunk boundary, so chunk 0 begins
+    // with that 0xC8 — and the scan used to report a motor at 0xC8 while
+    // completely missing the real one at 0x2A.
+    for keep in 1..10 {
+        let bus = Bus::with_transport(
+            MockTransport {
+                echo_tx: true,
+                echo_truncate: Some(keep),
+                ..MockTransport::with_replies([telemetry(0x2A)])
+            },
+            TIMEOUT,
+        );
+        assert_eq!(
+            bus.scan(false, |_| {}).unwrap(),
+            Vec::<u8>::new(),
+            "echo truncated to {keep} produced a phantom ID"
+        );
+    }
+}
+
+#[test]
+fn full_scan_partial_echo_does_not_answer_every_probe() {
+    // Stage 2 matches a reply by its first byte equalling the probed ID —
+    // but the probe frame's own first byte IS the probed ID, so a partial
+    // echo would satisfy that test at all 254 addresses.
+    let mut replies: Vec<Vec<u8>> = vec![Vec::new()]; // broadcast: silence
+    for _ in 0x01..=0xFEu8 {
+        replies.push(telemetry(0x10));
+    }
+    let bus = Bus::with_transport(
+        MockTransport {
+            echo_tx: true,
+            echo_truncate: Some(3),
+            ..MockTransport::with_replies(replies)
+        },
+        TIMEOUT,
+    );
+    assert_eq!(bus.scan(true, |_| {}).unwrap(), Vec::<u8>::new());
 }
 
 #[test]
@@ -435,7 +479,10 @@ fn send_raw_returns_unparsed_reply_bytes() {
 fn into_transport_requires_the_last_handle() {
     let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
     let m = bus.motor(0x01).unwrap();
-    assert!(bus.into_transport().is_none(), "a motor still holds the bus");
+    assert!(
+        bus.into_transport().is_none(),
+        "a motor still holds the bus"
+    );
     let clone = m.clone();
     assert!(m.into_transport().is_none(), "a clone still holds the bus");
     assert!(clone.into_transport().is_some(), "last handle recovers it");
@@ -444,8 +491,12 @@ fn into_transport_requires_the_last_handle() {
 #[test]
 fn partial_echoes_of_every_length_never_parse_as_telemetry() {
     // A truncated TX echo cannot be matched by strip_prefix; whatever
-    // remains must be rejected by parsing or the ID check, not mistaken
-    // for telemetry. Sweep every possible echo length.
+    // remains must be rejected, not mistaken for telemetry. Sweep every
+    // possible echo length.
+    //
+    // The silent-bus case below is the easy half — the leftover is under a
+    // full frame, so it fails on length no matter what else is wrong. The
+    // dangerous half is `partial_echo_followed_by_a_reply_is_not_telemetry`.
     for keep in 0..=10 {
         let mut m = motor(MockTransport {
             echo_tx: true,
@@ -454,6 +505,55 @@ fn partial_echoes_of_every_length_never_parse_as_telemetry() {
         });
         assert!(m.query().unwrap().is_none(), "echo truncated to {keep}");
     }
+}
+
+#[test]
+fn partial_echo_followed_by_a_reply_is_not_telemetry() {
+    // The case a silent bus cannot exercise: a truncated echo *plus* a
+    // genuine reply is 10 or more bytes, so nothing fails on length, and the
+    // straddling frame it decodes to is not obviously wrong. It starts at
+    // byte 0 of the unstripped echo, which is byte 0 of our own TX frame —
+    // this motor's ID — so the ID check waves it through, and the values
+    // that come out look entirely plausible.
+    //
+    // Before frame alignment was enforced, this wheel spinning at 300 RPM
+    // reported 0 RPM for a 6-byte echo and 1 RPM for a 5-byte one. Callers
+    // refuse to enter position mode above 10 RPM on the strength of that
+    // number, so "300 reads as 0" is the failure that matters.
+    let spinning = vec![0x01, 0x02, 0x00, 0x00, 0x01, 0x2C, 0x28, 0x80, 0x00, 0x00];
+    for keep in 1..10 {
+        let mut m = motor(MockTransport {
+            echo_tx: true,
+            echo_truncate: Some(keep),
+            ..MockTransport::with_replies([spinning.clone()])
+        });
+        assert!(
+            m.query().unwrap().is_none(),
+            "echo truncated to {keep} straddled a real reply and parsed as telemetry"
+        );
+    }
+
+    // The intact-echo case still works — this must reject misalignment, not
+    // every reply that arrives behind an echo.
+    let mut m = motor(MockTransport {
+        echo_tx: true,
+        ..MockTransport::with_replies([spinning])
+    });
+    assert_eq!(m.query().unwrap().expect("intact echo").speed_rpm, 300);
+}
+
+#[test]
+fn a_neighbours_reply_landing_first_does_not_hide_our_own() {
+    // Multi-drop: another motor's late answer can arrive inside our
+    // transaction window, ahead of ours. Both are whole frames, so the
+    // buffer is well-formed — pick out the one addressed to us rather than
+    // writing off the whole read.
+    let mut both = telemetry(0x02);
+    both.extend(telemetry(0x01));
+    let mut m = motor(MockTransport::with_replies([both]));
+    let fb = m.query().unwrap().expect("our own frame is in there");
+    assert_eq!(fb.id, 0x01);
+    assert_eq!(fb.speed_rpm, 100);
 }
 
 #[test]
@@ -488,9 +588,20 @@ fn two_motors_share_one_bus() {
     drop(right);
     let mock = bus.into_transport().expect("all handles dropped");
     assert_eq!(mock.sent.len(), 3);
-    assert_eq!(mock.sent[0], frame_velocity(0x01, 100, 1).to_vec());
-    assert_eq!(mock.sent[1], frame_velocity(0x02, 100, 1).to_vec());
-    assert_eq!(mock.sent[2], frame_brake(0x01).to_vec());
+    // Literal bytes: the point of this test is that each handle addresses
+    // its own motor, and byte 0 is the whole claim.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0xE4]
+    );
+    assert_eq!(
+        mock.sent[1],
+        vec![0x02, 0x64, 0x00, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0x11]
+    );
+    assert_eq!(
+        mock.sent[2],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1]
+    );
 }
 
 #[test]
@@ -503,6 +614,17 @@ fn motor_handles_are_cloneable() {
     drop(a);
     let mock = b.into_transport().expect("last handle");
     assert_eq!(mock.sent.len(), 2);
+    // Both clones reach the same transport, each carrying its own setpoint —
+    // a count alone would pass if a clone sent the wrong ID or value, or if
+    // one frame were sent twice.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0x00, 0x32, 0x00, 0x00, 0x01, 0x00, 0x00, 0x78]
+    );
+    assert_eq!(
+        mock.sent[1],
+        vec![0x01, 0x64, 0xFF, 0xCE, 0x00, 0x00, 0x01, 0x00, 0x00, 0x71]
+    );
 }
 
 // ── Mirrored (left/right) wheels ────────────────────────────────────────────
@@ -514,11 +636,20 @@ fn mirrored_negates_velocity_and_current_setpoints() {
     m.drive_velocity(100).unwrap();
     m.drive_current(-1234).unwrap();
     let mock = m.into_transport().expect("sole handle");
-    // "+100 forward" goes out as -100 on the mirrored side.
-    assert_eq!(mock.sent[0], frame_velocity(0x01, -100, 1).to_vec());
+    // Literal wire bytes. Building the expectation with frame_velocity()
+    // would assert the builder against itself — and this is the mirror-sign
+    // test, so a byte-swapped or sign-flipped builder is exactly what it
+    // has to be able to catch.
+    //
+    // "+100 forward" goes out as -100: 0xFF9C big-endian, accel 1.
+    assert_eq!(
+        mock.sent[0],
+        vec![0x01, 0x64, 0xFF, 0x9C, 0x00, 0x00, 0x01, 0x00, 0x00, 0x31]
+    );
+    // -1234 goes out as +1234 = 0x04D2.
     assert_eq!(
         mock.sent[1],
-        m0601::protocol::frame_current(0x01, 1234).to_vec()
+        vec![0x01, 0x64, 0x04, 0xD2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E]
     );
 }
 
