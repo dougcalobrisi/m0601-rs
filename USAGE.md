@@ -174,43 +174,23 @@ spaces or commas and optional `0x` prefixes.
 
 ## Library
 
-The crate is not yet on crates.io; depend on it by path
-or by git.
-
-**Same machine** — a path dependency, simplest and always up to date with
-your checkout:
-
-```toml
-[dependencies]
-m0601 = { path = "/path/to/m0601" }   # or a relative path
-```
-
-**Any machine** — a git dependency:
+Depend on the crate by git:
 
 ```toml
 [dependencies]
 m0601 = { git = "https://github.com/dougcalobrisi/m0601-rs-test.git" }
 ```
 
-If the remote requires authentication, cargo needs credentials to fetch it. Either:
-
-- add to `~/.cargo/config.toml` so cargo shells out to the `git` CLI
-  (which already knows your `gh`/stored credentials):
-
-  ```toml
-  [net]
-  git-fetch-with-cli = true
-  ```
-
-- or use SSH instead, if you have an SSH key on GitHub:
-
-  ```toml
-  m0601 = { git = "ssh://git@github.com/dougcalobrisi/m0601-rs-test.git" }
-  ```
-
 Pin to a known-good state with `rev = "<sha>"`, `tag = "..."`, or
 `branch = "main"` (default). `cargo update -p m0601` pulls the latest
 commit of the pinned branch.
+
+Or, working from a local checkout:
+
+```toml
+[dependencies]
+m0601 = { path = "../m0601-rs-test/m0601" }
+```
 
 ### Query without moving anything
 
