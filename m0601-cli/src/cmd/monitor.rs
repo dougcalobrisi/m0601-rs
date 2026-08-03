@@ -48,6 +48,11 @@ pub fn run(
 
     let mut log = match &csv {
         Some(path) => {
+            // `File::create` truncates. Say so before it happens rather than
+            // letting a re-run silently destroy the previous session's log.
+            if std::path::Path::new(path).exists() {
+                println!("[!] {path} already exists — overwriting it.");
+            }
             let mut w = BufWriter::new(File::create(path)?);
             writeln!(w, "{CSV_HEADER}")?;
             Some(w)
@@ -86,6 +91,10 @@ pub fn run(
         };
         match reading {
             None => {
+                // Debounce: a single dropped poll is common on RS485, so
+                // leave the last good reading on screen and only warn after 5
+                // consecutive misses (~1 s at 5 Hz) rather than flapping the
+                // line on every transient gap.
                 no_resp += 1;
                 if no_resp >= 5 {
                     print!("\r[!] no response — check motor power/wiring     ");
@@ -101,7 +110,9 @@ pub fn run(
                 } else {
                     format!(" {}", fb.faults)
                 };
-                let temp = fb.temp_c.map_or_else(|| " --".to_owned(), |t| format!("{t:3}"));
+                let temp = fb
+                    .temp_c
+                    .map_or_else(|| " --".to_owned(), |t| format!("{t:3}"));
                 print!(
                     "\r[{}] #{count:5} | {:<8} | Speed {:+4} RPM | Cur {:+6.3} A | \
                      Pos {:5.1} | Temp {temp}C | {fault}{trailer}",

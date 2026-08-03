@@ -106,7 +106,7 @@ flash).
 
 ## CRC
 
-Standard host frames carry a checksum over bytes 0..9 in byte 9:
+Standard host frames carry a checksum over bytes 0-8 in byte 9:
 **CRC-8/MAXIM** (Dallas/1-Wire): polynomial x⁸+x⁵+x⁴+1, reflected
 implementation constant `0x8C`, init `0x00`, no final XOR. Check value:
 `crc8("123456789") = 0xA1`.
@@ -140,8 +140,12 @@ rejection.
   motor's active mode** (see [Modes](#modes)). A zero value therefore does
   *not* universally mean "stop": it is 0 rpm in velocity mode, but "drive
   to 0°" in position mode and "zero torque" (a coast) in current mode.
-- **Acceleration** (byte 6): ramp time in units of **1 rpm per 0.1 ms**,
-  range 0–255. `0` selects the motor default; `1` is the fastest ramp.
+- **Acceleration** (byte 6): ramp steepness, range 0–255. `0` selects
+  the motor default; `1` is the *fastest* ramp, and larger values ramp
+  more gently. The wiki also gives a unit, “1 rpm per 0.1 ms”, which
+  reads as a rate and so contradicts that direction — see
+  [Known contradictions](#known-contradictions-between-sources), item 6.
+  Only the direction is relied on by this crate.
 - **Brake** (byte 7): `0xFF` engages the electric brake (velocity mode
   only); any other value must be `0x00`.
 
@@ -203,7 +207,7 @@ Common fields:
 | 2–3 | torque current | i16 BE; **amps = raw × 8 / 32767** |
 | 4–5 | speed | i16 BE, rpm directly (signed) |
 | 8 | faults | bitmask, below |
-| 9 | CRC-8/MAXIM over bytes 0..9 | verified on hardware; treat as advisory |
+| 9 | CRC-8/MAXIM over bytes 0-8 | verified on hardware; treat as advisory |
 
 Reply to a **`0x74` query**:
 
@@ -270,8 +274,8 @@ flags the corresponding bit.
    do carry a valid CRC-8/MAXIM**, in both layouts:
 
    ```text
-   0x74 query reply: 01 02 00 37 00 00 1E BB 00 D5  → CRC(bytes 0..9) = D5, matches
-   0x64 drive reply: 01 02 00 39 00 00 5D F1 00 6F  → CRC(bytes 0..9) = 6F, matches
+   0x74 query reply: 01 02 00 37 00 00 1E BB 00 D5  → CRC(bytes 0-8) = D5, matches
+   0x64 drive reply: 01 02 00 39 00 00 5D F1 00 6F  → CRC(bytes 0-8) = 6F, matches
    ```
 
    (These two frames also confirm the dual layout with live data: the
@@ -295,9 +299,17 @@ flags the corresponding bit.
 5. **Repeat counts.** Mode-switch and set-ID frames: vendor sample sends
    once; MotorLink and navigation_robot send 5×. Sending 5× is harmless
    (the frames are idempotent) and is what this crate does.
-6. Minor spec conflicts: no-load current ≤ 0.25 A (product page) vs
-   ≤ 0.2 A (README); mounting thread depth 5 mm (wiki) vs 6 mm (README).
-7. **No official PDF datasheet exists.** The wiki's protocol section is
+6. **Acceleration byte unit vs direction — unresolved.** The wiki states
+   the unit as “1 rpm per 0.1 ms”, i.e. a *rate*, under which a larger
+   value would ramp *faster*. Every source — the wiki included — also
+   says `1` is the fastest ramp and larger values are gentler, which is
+   the behaviour of a *time constant*. The two cannot both hold. Not
+   yet resolved against hardware; this crate documents only the
+   direction, which all sources agree on.
+7. Minor spec conflicts: no-load current ≤ 0.25 A (product page) vs
+   ≤ 0.2 A (README); mounting thread depth 5 mm (wiki) vs 6 mm (README);
+   supply 18 V (wiki/product page) vs a 12 V minimum (MotorLink).
+8. **No official PDF datasheet exists.** The wiki's protocol section is
    published as images only.
 
 ## Sources

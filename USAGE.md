@@ -66,12 +66,12 @@ Global flags work before or after the subcommand:
 |---|---|---|
 | `--port` | `/dev/ttyUSB0` | serial port |
 | `--id` | `0x01` | motor RS485 ID (hex `0x01` or decimal `1`) |
-| `--timeout` | `0.15` | reply wait in seconds (`scan`/`info`/`monitor`/`set-id`) |
+| `--timeout` | `0.15` | reply wait in seconds (0-3600). Governs `scan`/`info`/`monitor`/`set-id`; `raw` raises it to a 200 ms floor, and in `drive` it covers the port open and the position pre-flight check only — both 50 Hz loops use a fixed 6 ms wait |
 
 ### `scan` — who's on the bus?
 
 ```sh
-m0601 scan            # broadcast query, ~1 s
+m0601 scan            # broadcast query, ~0.3 s
 m0601 scan --full     # poll every ID 0x01..0xFE, ~40 s
 ```
 
@@ -109,7 +109,7 @@ Exits nonzero when the motor doesn't reply — usable in scripts.
 
 ```sh
 m0601 monitor --hz 5                 # one-line live dashboard, Ctrl+C stops
-m0601 monitor --hz 20 --csv log.csv  # also append rows to log.csv
+m0601 monitor --hz 20 --csv log.csv  # also log rows to log.csv (overwrites it)
 ```
 
 CSV columns: `timestamp,motor_id,mode,speed_rpm,current_a,temp_c,
@@ -130,14 +130,14 @@ m0601 control --rpm 100     # full-screen keyboard control
 | `F` / `B` | forward / backward at the `--rpm` preset (switches to velocity mode) |
 | `1`–`5`   | 50–250 RPM (switches to velocity mode) |
 | `←` / `→` | nudge ±10 RPM (velocity mode only) |
-| `S`       | stop — 0 RPM in velocity mode, hold current angle in position mode |
-| `K`       | electric brake (velocity mode only) |
+| `S`       | 0 RPM in velocity mode; hold the current angle in position mode; **zero torque — a coast, not a stop — in current mode** |
+| `K`       | electric brake (velocity mode only; ignored in current and position mode) |
 | `V`/`C`/`P` | switch mode: velocity / current / position |
 | `Q` / `Esc` / `Ctrl-C` | quit — forces velocity mode, zeroes, then brakes |
 
 Notes on behavior you'll actually notice:
 
-- `P` (position mode) is refused above 10 RPM (protocol constraint) and
+- `P` (position mode) is refused at 10 RPM or above (protocol constraint) and
   when no telemetry has arrived — an unknown speed is not zero. Entering
   position mode holds the wheel's *current* angle; it never jumps to 0°.
 - The dashboard shows the mode the **motor reports**; if it ever differs
@@ -149,10 +149,50 @@ Notes on behavior you'll actually notice:
   zero plus brake, not a gentle ramp. On SIGKILL or power loss the
   polling stops and the motor coasts, per protocol.
 
+### `drive` — scriptable motion in one mode
+
+`control` is interactive; `drive` is its batch counterpart. It holds a single
+setpoint in one mode, resending at 50 Hz, until `--secs` elapses or you press
+Ctrl-C — then it brakes. Each mode takes its own natural units:
+
+```sh
+m0601 drive velocity --rpm 100            # spin at 100 RPM until Ctrl-C
+m0601 drive velocity --rpm -80 --secs 3   # reverse at 80 RPM for 3 s, then stop
+m0601 drive velocity --rpm 200 --accel 40 # gentler ramp (accel 1 is the fastest)
+m0601 drive current --amps 1.5 --secs 2   # hold ~1.5 A of torque for 2 s
+m0601 drive position --deg 180            # rotate to 180° and hold
+```
+
+- **`--secs`** bounds the run (0-3600 s); omit it to drive until Ctrl-C. Either way the
+  motor is braked on exit.
+- **Units convert to the wire ranges**: `--rpm` clamps to ±330, `--amps`
+  maps through ±32767 ≈ ±8 A (so ±8 A is the reachable limit), `--deg` maps
+  0..360 onto 0..32767. Out-of-range values are rejected up front by the
+  argument parser, not silently clamped on the wire.
+- **`--accel`** (velocity only) is the ramp byte: `1` is the motor's *fastest*
+  ramp and the default; a large step at accel 1 on a loaded wheel can spike
+  current into the 3 A protection. Raise it (larger = gentler; `0` =
+  motor default) to ramp gently.
+- **Position mode is refused at 10 RPM or above** (protocol constraint) and when no
+  telemetry has arrived — an unknown speed is not a zero one. The pre-flight
+  speed check is the only part of `drive` that waits the full `--timeout`; the
+  50 Hz loop uses a fixed 6 ms reply wait like `control`.
+- **`safe_stop` on every exit path** — clean end, `--secs` timeout, Ctrl-C,
+  SIGTERM/SIGHUP, or a panic — forces velocity mode, zeroes, then brakes. On
+  SIGKILL or power loss the polling simply stops and the motor coasts.
+- A live one-line readout (mode, speed, current, position, temp, faults)
+  updates ~10 times a second while it runs. Winding temperature comes from an
+  extra 0x74 query interleaved every 10th cycle, since drive replies don't
+  carry it.
+
+Remember the polling corollary: a zero setpoint is not universally "stop". If
+you script `drive` runs back to back, each one brakes at the end, so there is
+no coasting gap to worry about between them.
+
 ### `set-id` — assign a bus address
 
 ```sh
-m0601 set-id --new 0x02        # prompts for confirmation
+m0601 set-id --new 0x02        # asks you to type 'yes' to confirm
 m0601 set-id --new 0x02 --yes  # skip the prompt
 ```
 
@@ -243,7 +283,7 @@ own once frames stop arriving.
 `drive_velocity` uses acceleration `1` — the motor's **fastest** ramp. A
 big step at accel 1 on a loaded wheel can spike current into the 3 A
 protection; use `drive_velocity_accel(rpm, accel)` with a larger value
-(units: 1 RPM per 0.1 ms; `0` = motor default) to ramp gently.
+(larger = gentler; `0` = motor default) to ramp gently.
 
 ### Telemetry while driving — the two reply layouts
 
@@ -374,7 +414,7 @@ It can also simulate a half-duplex TX echo (`echo_tx`), a truncated echo
 | Motor found but wrong `--id` | `m0601 scan` shows the real ID |
 | Moves briefly, then stops | your loop is below ~50 Hz — the motor coasts between frames |
 | Intermittent garbage / dropouts | brown wire floating; missing 120 Ω termination on long cable |
-| `P` refused in `control` | wheel above 10 RPM, or no telemetry yet |
+| `P` refused in `control` | wheel at 10 RPM or above, or no telemetry yet |
 | Motor ignores drive frames, fault bit set | a protection tripped (3 A bus / 4.6 A phase / 80 °C / stall) — it auto-clears in ~5 s (overheat: on cooling to 75 °C) |
 | Two motors, chaos after set-id | the set-ID frame renamed both — reconnect one at a time and re-assign |
 

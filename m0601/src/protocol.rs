@@ -56,9 +56,15 @@ pub type Frame = [u8; FRAME_LEN];
 /// CRC-8/MAXIM (Dallas 1-Wire): polynomial x⁸+x⁵+x⁴+1, reflected (0x8C),
 /// init 0.
 ///
-/// Host→motor frames carry this over bytes 0..9 in byte 9 — except the
+/// Host→motor frames carry this over bytes 0–8 in byte 9 — except the
 /// mode-switch ([`frame_mode`]) and set-ID ([`frame_set_id`]) frames, which
-/// carry no CRC at all. Motor replies do **not** use this CRC either.
+/// carry no CRC at all.
+///
+/// Motor replies carry it too, over the same bytes: a hardware capture
+/// settled that question, and [`Feedback::crc_ok`] reports the result. It
+/// stays informational — telemetry is never *rejected* on it — because the
+/// reference implementations disagree and firmware revisions may differ.
+/// See `PROTOCOL.md` in the repository.
 ///
 /// ```
 /// use m0601::protocol::crc8_maxim;
@@ -92,8 +98,12 @@ fn frame(id: u8, cmd: u8, data: [u8; 7]) -> Frame {
 
 /// Velocity drive frame. `rpm` is clamped to [`RPM_MIN`]`..=`[`RPM_MAX`].
 ///
-/// `accel` is the acceleration time in units of 1 RPM per 0.1 ms; `0` selects
-/// the motor's default (minimum effective value is 1).
+/// `accel` sets how steeply the motor ramps toward the setpoint: `1` is the
+/// *fastest* ramp, larger values ramp more gently, and `0` selects the
+/// motor's own default. Only that direction is documented here — the vendor
+/// sources state a unit for this byte ("1 RPM per 0.1 ms") whose sense
+/// contradicts the ramp direction every source agrees on, and it has not
+/// been resolved against hardware. See `PROTOCOL.md`.
 ///
 /// Only sustains motion while resent at ≥[`DRIVE_HZ_MIN`] Hz.
 ///

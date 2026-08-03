@@ -49,7 +49,8 @@
 //! - `CMD` is `0x64` (drive), `0x74` (feedback query) or `0xA0` (mode
 //!   switch). **For `0xA0` the last byte is the mode (`01`/`02`/`03`), not
 //!   a CRC.**
-//! - `ACCEL` is in units of 1 RPM / 0.1 ms; `0` selects the default.
+//! - `ACCEL` sets ramp steepness: `1` is the fastest ramp, larger values
+//!   are gentler, `0` selects the motor default.
 //! - `BRAKE` = `0xFF` engages the electric brake (velocity mode only).
 //! - Two special unaddressed frames exist: the broadcast ID query
 //!   (`C8 64 00×7 DE`) and set-ID (`AA 55 53 <id> 00×6`, no CRC, must be
@@ -130,9 +131,12 @@
 //!
 //! # References
 //!
-//! The repository's `PROTOCOL.md` is the full protocol and hardware
+//! The repository's [`PROTOCOL.md`] is the full protocol and hardware
 //! reference, with per-claim sourcing and the known contradictions between
-//! sources. Primary materials:
+//! sources (every other `PROTOCOL.md` mention in these docs points there).
+//! Primary materials:
+//!
+//! [`PROTOCOL.md`]: https://github.com/dougcalobrisi/m0601-rs-test/blob/main/PROTOCOL.md
 //!
 //! - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
 //! - [DDT M0601C-111 vendor sample](https://github.com/tech-life-hacking/DDT_M0601C_111)
