@@ -32,7 +32,7 @@ Companion documents:
 Sanity check the whole chain in one command:
 
 ```sh
-m0601 scan          # should print the motor's ID within a second
+m0601 scan          # should print the motor's ID within a few seconds
 ```
 
 ## The one rule: it's a polling protocol
@@ -71,16 +71,21 @@ Global flags work before or after the subcommand:
 ### `scan` — who's on the bus?
 
 ```sh
-m0601 scan            # broadcast query, ~0.3 s
+m0601 scan            # broadcast + poll IDs 0x01..0x0F, ~3 s
 m0601 scan --full     # poll every ID 0x01..0xFE, ~40 s
 ```
 
-The fast scan broadcasts one query; motors answer without arbitration, so
-**two motors can collide and look like one or none**. When the collision
-garbles the reply so badly that no ID can be read at all, `scan` says so
-and automatically falls back to the full poll; if it read some IDs but
-also garbage, it lists what it found and suggests `--full`. When you need
-certainty (e.g. before `set-id`), use `--full` directly.
+The default scan broadcasts one query, then polls IDs `0x01..0x0F`
+individually — motors ship at `0x01` and small fleets stay low, so that
+covers the common case in seconds. The output always says which range was
+polled; motors assigned a higher ID need `--full`.
+
+The broadcast is unarbitrated, so **two motors can collide and look like
+one or none**. When the collision garbles the reply so badly that no ID
+can be read anywhere, `scan` says so and automatically escalates to the
+full poll; if it read some IDs but also garbage, it lists what it found
+and suggests `--full`. When you need certainty (e.g. before `set-id`),
+use `--full` directly.
 
 ### `info` — configuration + one-shot readout
 
@@ -362,7 +367,7 @@ values are *not* mirror-adjusted (the correct transform depends on your
 mechanical convention), and `Feedback::raw` always holds the untouched
 wire bytes.
 
-Don't run `scan(true, ...)` concurrently with a drive loop on the same
+Don't run `scan(0x01..=0xFE, ...)` concurrently with a drive loop on the same
 bus — the scan holds the bus for ~254 × timeout and the driven motor will
 coast.
 

@@ -94,7 +94,7 @@ pub struct ScanReport {
     /// into bytes belonging to neither. (A partly-captured TX echo looks
     /// the same; either way the bus is *not* silent.) So `ids` being empty
     /// alongside `garbled: true` does **not** mean no motors are present —
-    /// it is a strong hint to re-scan with `full: true`, which probes each
+    /// it is a strong hint to re-scan polling every ID, which probes each
     /// ID in isolation. (A full scan can still collide where two motors
     /// share one ID — the aftermath of a misused
     /// [`set_id`](Bus::set_id) — since both answer the same probe.)
@@ -164,9 +164,11 @@ impl<T: Transport> Bus<T> {
     /// Discover motor IDs on the bus.
     ///
     /// Stage 1 broadcasts the fixed ID-query frame and listens for 300 ms.
-    /// With `full`, stage 2 probes every ID `0x01..=0xFE` with a feedback
-    /// frame (slow: ~254 × timeout). `progress` is called with each ID
-    /// before it is probed.
+    /// Stage 2 probes each ID in `poll` with a feedback frame, at a cost of
+    /// one `timeout` apiece — pass `0x01..=0xFE` for an exhaustive scan
+    /// (~254 × timeout), a narrower range to trade coverage for time, or
+    /// `std::iter::empty()` for broadcast-only. IDs outside `0x01..=0xFE`
+    /// are skipped. `progress` is called with each ID before it is probed.
     ///
     /// Half-duplex TX echoes are stripped before interpreting replies.
     ///
@@ -176,21 +178,25 @@ impl<T: Transport> Bus<T> {
     /// Motors answer a broadcast without arbitration, so two that reply at
     /// once collide into bytes belonging to neither. **A stage-1 result of
     /// one ID is therefore not evidence that only one motor is present** —
-    /// pass `full: true` when that distinction matters (as
+    /// poll every ID when that distinction matters (as
     /// [`set_id`](Self::set_id) requires it to).
     ///
     /// When the collision garbles the buffer beyond parsing, stage 1 cannot
     /// name any ID at all — a four-motor bus can scan as *empty*. That case
     /// is reported via [`ScanReport::garbled`] so callers can escalate to a
-    /// full scan instead of concluding the bus is dead.
+    /// wider poll instead of concluding the bus is dead.
     ///
     /// # Blocking
     ///
-    /// Every probe holds the bus lock across its reply wait, so a `full`
-    /// scan monopolises the bus for ~254 × `timeout`. Do not run one
-    /// concurrently with a drive loop on the same bus: the loop's frames
-    /// will not get out, and its motor will coast.
-    pub fn scan(&self, full: bool, mut progress: impl FnMut(u8)) -> Result<ScanReport> {
+    /// Every probe holds the bus lock across its reply wait, so a scan
+    /// monopolises the bus for roughly one `timeout` per polled ID. Do not
+    /// run a long one concurrently with a drive loop on the same bus: the
+    /// loop's frames will not get out, and its motor will coast.
+    pub fn scan(
+        &self,
+        poll: impl IntoIterator<Item = u8>,
+        mut progress: impl FnMut(u8),
+    ) -> Result<ScanReport> {
         let mut found = std::collections::BTreeSet::new();
 
         // Stage 1 — broadcast. Replies land back-to-back when several motors
@@ -225,23 +231,24 @@ impl<T: Transport> Bus<T> {
             None => garbled = !payload.is_empty(),
         }
 
-        // Stage 2 — exhaustive poll.
-        if full {
-            for id in 0x01..=0xFEu8 {
-                progress(id);
-                let probe = frame_feedback(id);
-                let resp = lock(&self.transport).send_recv(&probe, self.timeout)?;
-                // A valid reply is a whole frame carrying the probed ID. The
-                // alignment check matters here too: the probe's own first
-                // byte *is* `id`, so a partial echo would answer every probe
-                // and report a motor at all 254 addresses.
-                if frames(&probe, &resp)
-                    .into_iter()
-                    .flatten()
-                    .any(|frame| frame[0] == id)
-                {
-                    found.insert(id);
-                }
+        // Stage 2 — per-ID poll.
+        for id in poll {
+            if !(0x01..=0xFE).contains(&id) {
+                continue;
+            }
+            progress(id);
+            let probe = frame_feedback(id);
+            let resp = lock(&self.transport).send_recv(&probe, self.timeout)?;
+            // A valid reply is a whole frame carrying the probed ID. The
+            // alignment check matters here too: the probe's own first
+            // byte *is* `id`, so a partial echo would answer every probe
+            // and report a motor at all 254 addresses.
+            if frames(&probe, &resp)
+                .into_iter()
+                .flatten()
+                .any(|frame| frame[0] == id)
+            {
+                found.insert(id);
             }
         }
 
@@ -263,7 +270,7 @@ impl<T: Transport> Bus<T> {
     /// the new ID, leaving a bus full of duplicates that can only be undone
     /// by disconnecting them one at a time. This method cannot detect that
     /// situation for you — verify with
-    /// [`scan(true, …)`](Self::scan) beforehand, since a stage-1 scan
+    /// [`scan(0x01..=0xFE, …)`](Self::scan) beforehand, since a stage-1 scan
     /// cannot distinguish one motor from several answering at once.
     pub fn set_id(&self, new_id: u8) -> Result<Option<u8>> {
         let frame = frame_set_id(new_id)?;

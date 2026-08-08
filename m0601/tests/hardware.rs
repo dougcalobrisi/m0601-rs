@@ -64,7 +64,7 @@ fn open() -> M0601 {
 fn scan_finds_motor() {
     let _guard = port_guard();
     let bus = m0601::Bus::open(&port(), TIMEOUT).expect("open serial port");
-    let report = bus.scan(false, |_| {}).expect("scan I/O");
+    let report = bus.scan(std::iter::empty(), |_| {}).expect("scan I/O");
     // On a multi-motor bus the broadcast replies collide, so garbled bytes
     // are proof of life just as a clean ID is; only silence is a failure.
     assert!(

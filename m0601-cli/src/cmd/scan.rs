@@ -1,31 +1,42 @@
 //! `scan` — discover motor IDs on the bus.
 
 use std::io::Write;
+use std::ops::RangeInclusive;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use m0601::protocol::BAUD;
 use m0601::{Bus, ScanReport};
 
+/// What the default scan polls after the broadcast. Motors ship at 0x01 and
+/// small fleets stay in single digits, so this catches the common case in a
+/// couple of seconds instead of `--full`'s ~40.
+const QUICK_POLL: RangeInclusive<u8> = 0x01..=0x0F;
+/// What `--full` polls: every assignable ID.
+const FULL_POLL: RangeInclusive<u8> = 0x01..=0xFE;
+
 pub fn run(port: &str, timeout: Duration, full: bool) -> m0601::Result<ExitCode> {
     let bus = Bus::open(port, timeout)?;
     println!("Scanning {port} @ {BAUD} 8N1 ...");
 
     // `exhaustive` tracks whether every ID was individually probed — only
-    // then is an empty result evidence of an empty bus, and only then is
-    // stage-1 garbling not worth a warning.
+    // then is an empty result evidence of an empty bus, and only then are
+    // the range warning and the garbled warning not worth printing.
     let (report, exhaustive) = if full {
-        (full_scan(&bus)?, true)
+        (poll_scan(&bus, FULL_POLL)?, true)
     } else {
-        let quick = bus.scan(false, |_| {})?;
+        let quick = poll_scan(&bus, QUICK_POLL)?;
         if quick.ids.is_empty() && quick.garbled {
-            // The broadcast came back as garbage no motor sent — several
-            // motors answering at once collide into exactly this. An empty
-            // quick scan therefore proves nothing; probe each ID alone.
+            // The broadcast came back as garbage no motor sent — motors
+            // are answering (colliding), just none inside the quick range.
+            // An empty quick scan therefore proves nothing; probe them all.
             // (Not collision-proof either — duplicate IDs still answer the
             // same probe together — but those need set-id surgery anyway.)
-            println!("Broadcast reply was garbled (motors answering together collide).");
-            (full_scan(&bus)?, true)
+            println!(
+                "Broadcast reply was garbled (motors answering together collide), yet no \
+                 motor answered 0x01..0x0F — polling every ID."
+            );
+            (poll_scan(&bus, FULL_POLL)?, true)
         } else {
             (quick, false)
         }
@@ -36,6 +47,11 @@ pub fn run(port: &str, timeout: Duration, full: bool) -> m0601::Result<ExitCode>
         println!(
             "  Checklist: 18V power on? brown wire -> GND? try swapping A/B (orange<->white)."
         );
+        if exhaustive {
+            println!("  (All 254 IDs 0x01..0xFE were polled.)");
+        } else {
+            println!("  Only IDs 0x01..0x0F were polled — `scan --full` tries all 254.");
+        }
         return Ok(ExitCode::FAILURE);
     }
 
@@ -43,9 +59,16 @@ pub fn run(port: &str, timeout: Duration, full: bool) -> m0601::Result<ExitCode>
     for mid in &report.ids {
         println!("  - ID 0x{mid:02X} (decimal {mid})");
     }
-    if !exhaustive && report.garbled {
-        println!("\nPart of the broadcast reply was garbled — colliding motors may be hidden.");
-        println!("Run `scan --full` for a definitive list.");
+    if !exhaustive {
+        if report.garbled {
+            println!(
+                "\nOnly IDs 0x01..0x0F were polled, and part of the broadcast reply was \
+                 garbled — colliding or higher-ID motors may be hidden."
+            );
+            println!("Run `scan --full` for a definitive list.");
+        } else {
+            println!("\nOnly IDs 0x01..0x0F were polled; motors above that need `scan --full`.");
+        }
     }
     if let [only] = report.ids.as_slice() {
         println!("\nUse:  --id 0x{only:02X}");
@@ -53,11 +76,16 @@ pub fn run(port: &str, timeout: Duration, full: bool) -> m0601::Result<ExitCode>
     Ok(ExitCode::SUCCESS)
 }
 
-/// Poll every ID individually, with a progress bar.
-fn full_scan(bus: &Bus) -> m0601::Result<ScanReport> {
-    println!("Full poll 0x01..0xFE (~40s):");
-    let report = bus.scan(true, |mid| {
-        let filled = (30 * mid as usize) / 254;
+/// Broadcast, then poll `range`, with a progress bar.
+fn poll_scan(bus: &Bus, range: RangeInclusive<u8>) -> m0601::Result<ScanReport> {
+    let (start, end) = (*range.start(), *range.end());
+    let count = usize::from(end - start) + 1;
+    let secs = (count as f64 * bus.timeout().as_secs_f64()).ceil();
+    println!("Polling 0x{start:02X}..0x{end:02X} ({count} IDs, ~{secs:.0}s):");
+    let report = bus.scan(range, |mid| {
+        // `mid` is about to be probed, so count it as in-progress: the bar
+        // shows 1/count at the first ID and reaches full at the last.
+        let filled = 30 * (usize::from(mid - start) + 1) / count;
         print!(
             "\r  [{}{}] 0x{mid:02X}",
             "#".repeat(filled),

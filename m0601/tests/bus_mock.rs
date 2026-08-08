@@ -174,7 +174,7 @@ fn set_mode_sends_exactly_five_frames() {
 fn scan_broadcast_finds_id() {
     // Bus answers the broadcast with a frame starting with the motor's ID.
     let bus = Bus::with_transport(MockTransport::with_replies([telemetry(0x2A)]), TIMEOUT);
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, vec![0x2A]);
     assert!(!report.garbled);
 }
@@ -191,7 +191,7 @@ fn scan_rejects_own_tx_echo() {
         },
         TIMEOUT,
     );
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, Vec::<u8>::new());
     // A fully-recognised echo is accounted for — nothing garbled about it.
     assert!(!report.garbled);
@@ -205,7 +205,7 @@ fn scan_ignores_stray_bytes_that_are_not_a_whole_frame() {
         MockTransport::with_replies([vec![0x2A, 0x2B, 0x2C]]),
         TIMEOUT,
     );
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, Vec::<u8>::new());
     // ...but those bytes came from somewhere, and the caller must hear it.
     assert!(report.garbled);
@@ -221,7 +221,7 @@ fn scan_flags_multi_motor_collision_as_garbled_not_silent() {
         0x03, 0x00, 0x00, 0x14, 0x00, 0x05, 0x00, 0x00, 0x0F, 0x13, 0x00, 0x09, 0xC7, 0x00, 0x64,
     ];
     let bus = Bus::with_transport(MockTransport::with_replies([collided]), TIMEOUT);
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, Vec::<u8>::new());
     assert!(report.garbled);
 }
@@ -231,7 +231,7 @@ fn scan_finds_several_motors_answering_back_to_back() {
     let mut reply = telemetry(0x2A);
     reply.extend(telemetry(0x05));
     let bus = Bus::with_transport(MockTransport::with_replies([reply]), TIMEOUT);
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, vec![0x05, 0x2A]);
     assert!(!report.garbled);
 }
@@ -245,7 +245,7 @@ fn scan_ignores_collision_garbage_but_keeps_clean_frames() {
     let mut resp = vec![0x00, 0xFF, 0x13, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     resp.extend(telemetry(0x2A));
     let bus = Bus::with_transport(MockTransport::with_replies([resp]), TIMEOUT);
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, vec![0x2A]);
     assert!(report.garbled);
 }
@@ -266,7 +266,7 @@ fn scan_partial_echo_reports_nothing_rather_than_a_phantom() {
             },
             TIMEOUT,
         );
-        let report = bus.scan(false, |_| {}).unwrap();
+        let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
         assert_eq!(
             report.ids,
             Vec::<u8>::new(),
@@ -295,7 +295,7 @@ fn full_scan_partial_echo_does_not_answer_every_probe() {
         },
         TIMEOUT,
     );
-    assert_eq!(bus.scan(true, |_| {}).unwrap().ids, Vec::<u8>::new());
+    assert_eq!(bus.scan(0x01..=0xFE, |_| {}).unwrap().ids, Vec::<u8>::new());
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn scan_echo_plus_reply_finds_real_id() {
         },
         TIMEOUT,
     );
-    let report = bus.scan(false, |_| {}).unwrap();
+    let report = bus.scan(std::iter::empty(), |_| {}).unwrap();
     assert_eq!(report.ids, vec![0x2A]);
     assert!(!report.garbled);
 }
@@ -325,7 +325,7 @@ fn full_scan_probes_all_ids_and_matches_by_reply_id() {
     }
     let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
     let mut progress = Vec::new();
-    let found = bus.scan(true, |id| progress.push(id)).unwrap().ids;
+    let found = bus.scan(0x01..=0xFE, |id| progress.push(id)).unwrap().ids;
     assert_eq!(found, vec![0x10]);
     // All 254 IDs probed, in order, each with its own feedback frame.
     assert_eq!(progress, (0x01..=0xFEu8).collect::<Vec<_>>());
@@ -348,7 +348,29 @@ fn full_scan_ignores_reply_with_wrong_id() {
         });
     }
     let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
-    assert_eq!(bus.scan(true, |_| {}).unwrap().ids, Vec::<u8>::new());
+    assert_eq!(bus.scan(0x01..=0xFE, |_| {}).unwrap().ids, Vec::<u8>::new());
+}
+
+#[test]
+fn scan_polls_only_the_requested_ids_and_skips_invalid_ones() {
+    // Broadcast silence; motor 0x05 answers its probe. 0x00 and 0xFF are
+    // not assignable IDs and must not be probed at all.
+    let mut replies: Vec<Vec<u8>> = vec![Vec::new()]; // broadcast: silence
+    for id in 0x01..=0x0Fu8 {
+        replies.push(if id == 0x05 {
+            telemetry(0x05)
+        } else {
+            Vec::new()
+        });
+    }
+    let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
+    let report = bus.scan((0x00..=0x0F).chain([0xFF]), |_| {}).unwrap();
+    assert_eq!(report.ids, vec![0x05]);
+    let mock = bus.into_transport().expect("no motors minted");
+    // 1 broadcast + 15 probes: 0x00 and 0xFF were skipped.
+    assert_eq!(mock.sent.len(), 16);
+    assert_eq!(mock.sent[1], frame_feedback(0x01).to_vec());
+    assert_eq!(mock.sent[15], frame_feedback(0x0F).to_vec());
 }
 
 #[test]

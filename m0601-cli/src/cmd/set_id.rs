@@ -30,7 +30,7 @@ pub fn run(port: &str, timeout: Duration, new_id: u8, yes: bool) -> m0601::Resul
     let bus = Bus::open(port, timeout)?;
     print!("  Checking the bus is not shared (polling all 254 IDs)... ");
     std::io::stdout().flush()?;
-    let ids = bus.scan(true, |_| {})?.ids;
+    let ids = bus.scan(0x01..=0xFE, |_| {})?.ids;
     println!("done.");
     let current = match ids.as_slice() {
         [] => {

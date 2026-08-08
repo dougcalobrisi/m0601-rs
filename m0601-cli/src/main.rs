@@ -39,7 +39,7 @@ struct Cli {
 enum Cmd {
     /// Discover motor IDs on the bus
     Scan {
-        /// Poll every ID 0x01..0xFE (~40s)
+        /// Poll every ID 0x01..0xFE (~40s) instead of the default 0x01..0x0F
         #[arg(long)]
         full: bool,
     },
