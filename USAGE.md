@@ -415,7 +415,8 @@ coast.
 **Reference implementation:** the `m0601-quad` crate in this repository
 is the canonical multi-motor consumer — a four-wheel skid-steer app
 showing the one-thread-owns-the-bus scheduling above (four spaced drive
-frames + one round-robin poll per 18 ms cycle), the group stop on every
+frames every 18 ms cycle, with one round-robin poll thinned to every 2nd
+cycle to stay inside the bus budget), the group stop on every
 exit path, fail-closed startup, and the `invert`/`mirrored` sign
 convention applied exactly once. Start from its `pilot.rs` when building
 your own multi-motor loop.

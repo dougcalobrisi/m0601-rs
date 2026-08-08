@@ -6,7 +6,7 @@
 # lines to paste back here (it never writes this file itself).
 
 [bus]
-port = "/dev/ttyUSB0"
+port = "/dev/ttyUSB1"
 cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
                     # drive interval drops below the 50 Hz floor and it
                     # coasts a little every cycle. 18 leaves 2 ms of margin.
@@ -19,8 +19,12 @@ cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
 min_gap_ms = 2.0    # -> Bus::with_min_gap; idle AFTER each frame, so
                     # frame-to-frame spacing is ~2.9 ms (0.9 ms frame + gap).
                     # A floor, not a schedule; tune from `check --probe`.
-reply_wait_ms = 3.0 # per-poll reply window. Short on purpose: the bus is
-                    # locked for its whole duration.
+reply_wait_ms = 2.0 # per-poll reply window. Short on purpose: the bus is
+                    # locked (a fixed sleep) for its whole duration every
+                    # cycle. Measured turnaround on this rig is ~1.0-1.5 ms
+                    # (`check --probe` still hears all four at 1.5, loses
+                    # three at 1.0), so 2.0 keeps margin while shaving 1 ms
+                    # of dead time off every cycle. Re-measure on new motors.
 
 [limits]
 max_rpm = 120          # 100% throttle commands exactly this (wheel max 330)
@@ -34,7 +38,7 @@ ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
 current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp
 current_trip_ms = 400.0 # debounce; start-up inrush is normal and shorter
 stale_ms = 500.0       # telemetry older than this: warn (one missed poll is
-                       # expected — each wheel is polled every 4th cycle)
+                       # expected — each wheel is polled every 8th cycle)
 dead_ms = 1500.0       # telemetry older than this: stop the vehicle. Three
                        # driving wheels + one unknown yaws the machine.
 

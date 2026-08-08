@@ -3,15 +3,17 @@
 //! thread-per-wheel, but that gains no parallelism (half-duplex RS485
 //! serializes everything) and forfeits deterministic cycle timing.
 //!
-//! Each cycle: one round-robin telemetry poll, then four drive frames
-//! (the library spaces them on the wire), one safety verdict. **The four
-//! drive frames are never negotiable; the poll is the only optional
-//! exchange.** The poll is also the only exchange that reads — and
-//! therefore drains — the bus, so the four unread drive replies per cycle
-//! never accumulate. It runs at the *top* of the cycle, a full sleep away
-//! from the previous cycle's last drive frame, so that frame's late reply
-//! is already buffered (and discarded by the poll's input clear) instead
-//! of landing inside the poll window and being decoded as telemetry.
+//! Each cycle: four drive frames (the library spaces them on the wire) and
+//! one safety verdict, and — every `POLL_EVERY`th cycle — one round-robin
+//! telemetry poll. **The four drive frames are never negotiable; the poll
+//! is the only optional exchange**, which is why it is the one thinned out
+//! to keep cycles inside the bus budget. The poll is also the only exchange
+//! that reads — and therefore drains — the bus, so the unread drive replies
+//! that pile up between polls never accumulate unbounded. It runs at the
+//! *top* of its cycle, a full sleep away from the previous cycle's last
+//! drive frame, so that frame's late reply is already buffered (and
+//! discarded by the poll's input clear) instead of landing inside the poll
+//! window and being decoded as telemetry.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,6 +34,16 @@ pub const UI_WATCHDOG: Duration = Duration::from_secs(1);
 /// Consecutive deadline overruns before the pilot declares itself unfit
 /// to guarantee the 50 Hz floor and stops the vehicle.
 const MAX_OVERRUNS: u64 = 5;
+
+/// Poll one wheel every Nth cycle rather than every cycle. The four drive
+/// frames are the hard floor of a cycle's bus time; the poll (which sleeps
+/// out the whole reply window) is what pushes an occupied cycle to the edge
+/// of the budget. Polling every 2nd cycle leaves the other cycles cheap, so
+/// a scheduler jitter spike usually lands on a cycle with room to absorb it
+/// and the `MAX_OVERRUNS` run never accumulates. At 2, each wheel is still
+/// polled every 8 cycles (~144 ms at an 18 ms cycle); one miss (~288 ms)
+/// stays under `stale_ms`, so "one dropped poll is expected" still holds.
+const POLL_EVERY: u64 = 2;
 
 /// A snapshot for the CSV logger, sent lossily (`try_send`) so a stalled
 /// SD-card write can never block the drive loop.
@@ -134,41 +146,44 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
         let accel = self.cfg.limits.accel;
         let ramp_step = (self.cfg.limits.ramp_rpm_per_s as f32) * self.cfg.cycle().as_secs_f32();
 
-        // -- one round-robin poll (first: see the module doc) -------------
-        // The polled wheel is also a wheel that was *driven* last cycle,
-        // and motors answer drive frames too. Polling here, right after
-        // the inter-cycle sleep, keeps that drive reply out of the poll
-        // window; polling after this cycle's drives would put the
-        // last-driven wheel's reply inside its own poll window every
-        // fourth cycle (only the enforced min_gap apart), where a slow
-        // adapter delivers it as garbage temperature/position.
-        let k = (self.cycle_idx % 4) as usize;
-        match self.wheels[k].poll(self.cfg.reply_wait()) {
-            Ok(Some(fb)) => {
-                self.state[k].telemetry.absorb(fb);
-                self.state[k].last_reply = Some(self.clock.now());
-                self.state[k].missed_polls = 0;
-                // Current-trip debounce bookkeeping.
-                if f64::from(fb.current_a.abs()) >= self.cfg.limits.current_trip_a {
-                    let now = self.clock.now();
-                    self.state[k].over_current_since.get_or_insert(now);
-                } else {
-                    self.state[k].over_current_since = None;
+        // -- round-robin poll, every POLL_EVERY-th cycle (module doc) -----
+        // The polled wheel was also *driven* last cycle, and motors answer
+        // drive frames too. Polling here, right after the inter-cycle sleep,
+        // keeps that drive reply out of the poll window; polling after this
+        // cycle's drives would put the last-driven wheel's reply inside its
+        // own poll window (only the enforced min_gap apart), where a slow
+        // adapter delivers it as garbage temperature/position. `send_recv`'s
+        // input clear drains the drive replies that pile up between polls.
+        // See POLL_EVERY for why the poll does not run every cycle.
+        if self.cycle_idx.is_multiple_of(POLL_EVERY) {
+            let k = ((self.cycle_idx / POLL_EVERY) % 4) as usize;
+            match self.wheels[k].poll(self.cfg.reply_wait()) {
+                Ok(Some(fb)) => {
+                    self.state[k].telemetry.absorb(fb);
+                    self.state[k].last_reply = Some(self.clock.now());
+                    self.state[k].missed_polls = 0;
+                    // Current-trip debounce bookkeeping.
+                    if f64::from(fb.current_a.abs()) >= self.cfg.limits.current_trip_a {
+                        let now = self.clock.now();
+                        self.state[k].over_current_since.get_or_insert(now);
+                    } else {
+                        self.state[k].over_current_since = None;
+                    }
                 }
-            }
-            // The debounce means "OBSERVED over the limit for the whole
-            // window". A missed reply is not an observation: leaving the
-            // timer armed would stretch one transient sample plus bus
-            // noise into a latched trip.
-            Ok(None) => {
-                self.state[k].over_current_since = None;
-                self.state[k].missed_polls += 1;
-            }
-            Err(e) => {
-                self.state[k].over_current_since = None;
-                self.state[k].missed_polls += 1;
-                self.shared
-                    .set_msg(format!("bus error: {e} (still polling)"));
+                // The debounce means "OBSERVED over the limit for the whole
+                // window". A missed reply is not an observation: leaving the
+                // timer armed would stretch one transient sample plus bus
+                // noise into a latched trip.
+                Ok(None) => {
+                    self.state[k].over_current_since = None;
+                    self.state[k].missed_polls += 1;
+                }
+                Err(e) => {
+                    self.state[k].over_current_since = None;
+                    self.state[k].missed_polls += 1;
+                    self.shared
+                        .set_msg(format!("bus error: {e} (still polling)"));
+                }
             }
         }
 
@@ -505,7 +520,7 @@ mod tests {
         let (rig, mut pilot) = rig(|_, _| {});
         lock(&rig.shared.intent).throttle = 0.5;
         rig.run_until(&mut pilot, 12);
-        let floor = Duration::from_secs(1) / m0601::protocol::DRIVE_HZ_MIN;
+        let floor = m0601::drive_floor();
         for w in 0..4 {
             let log = rig.frames(w);
             assert!(log.len() >= 12, "wheel {w} driven every cycle");
@@ -612,7 +627,7 @@ mod tests {
             }
         });
         lock(&rig.shared.intent).throttle = 0.5;
-        // Debounce is 400 ms ≈ 23 cycles; wheel 0 is polled every 4th.
+        // Debounce is 400 ms ≈ 23 cycles; wheel 0 is polled every 8th.
         rig.run_until(&mut pilot, 12);
         assert!(lock(&rig.shared.trip).is_none(), "not before the window");
         rig.run_until(&mut pilot, 60);

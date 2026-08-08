@@ -222,7 +222,7 @@ impl Config {
         }
 
         if let Some(cycle) = ms(self.bus.cycle_ms) {
-            let floor = Duration::from_secs(1) / m0601::protocol::DRIVE_HZ_MIN;
+            let floor = m0601::drive_floor();
             if cycle > floor {
                 e.push(format!(
                     "bus.cycle_ms = {} puts each wheel's drive interval over \
@@ -235,17 +235,14 @@ impl Config {
                         .into(),
                 );
             }
-            // The cycle must fit its bus occupancy: four drive frames
-            // (each = frame time + the enforced idle gap after it) plus
-            // one poll (frame + reply window; the reply lands inside the
-            // window) plus the enforced gap after the poll exchange — the
-            // library stamps `last_tx` when the exchange returns, so the
-            // next cycle's first drive frame cannot start any sooner.
-            // `busy` is therefore the bus-imposed minimum period. No
-            // slack at all is an error; thin slack a warning.
+            // The cycle must fit its bus occupancy: four drive frames plus
+            // one poll, each frame trailed by the enforced idle gap and the
+            // poll additionally holding the bus for its reply window. The
+            // library owns that arithmetic (`m0601::bus_period`); `busy` is
+            // the bus-imposed minimum period. No slack at all is an error;
+            // thin slack a warning.
             if let (Some(gap), Some(wait)) = (ms(self.bus.min_gap_ms), ms(self.bus.reply_wait_ms)) {
-                let frame = frame_time();
-                let busy = 4 * (frame + gap) + frame + wait + gap;
+                let busy = m0601::bus_period(4, 1, gap, wait);
                 if busy >= cycle {
                     e.push(format!(
                         "bus timing does not fit: 4 drives + 1 poll occupy ~{busy:?} \
@@ -338,12 +335,6 @@ impl Config {
 
         r
     }
-}
-
-/// One 10-byte frame's time on the wire at the protocol baud (8N1).
-pub fn frame_time() -> Duration {
-    let bits = m0601::protocol::FRAME_LEN as u64 * 10;
-    Duration::from_micros(bits * 1_000_000 / u64::from(m0601::protocol::BAUD))
 }
 
 #[cfg(test)]
