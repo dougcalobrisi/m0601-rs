@@ -412,6 +412,14 @@ Don't run `scan(0x01..=0xFE, ...)` concurrently with a drive loop on the same
 bus — the scan holds the bus for ~254 × timeout and the driven motor will
 coast.
 
+**Reference implementation:** the `m0601-quad` crate in this repository
+is the canonical multi-motor consumer — a four-wheel skid-steer app
+showing the one-thread-owns-the-bus scheduling above (four spaced drive
+frames + one round-robin poll per 18 ms cycle), the group stop on every
+exit path, fail-closed startup, and the `invert`/`mirrored` sign
+convention applied exactly once. Start from its `pilot.rs` when building
+your own multi-motor loop.
+
 ### Error handling
 
 ```rust

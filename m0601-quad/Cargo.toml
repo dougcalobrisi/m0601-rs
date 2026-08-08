@@ -1,0 +1,25 @@
+[package]
+name = "m0601-quad"
+description = "Four-wheel skid-steer monitor and drive app for M0601 hub motors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# NOTE: never set `panic = "abort"` for this crate. Both panic recovery
+# paths (the pilot's catch_unwind and the UI's guards) rely on unwinding
+# to reach safe_stop_all; abort would silently disable them.
+
+[dependencies]
+m0601 = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+ctrlc = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

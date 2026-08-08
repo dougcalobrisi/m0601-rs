@@ -169,6 +169,16 @@ fn main() -> m0601::Result<()> {
 }
 ```
 
+## m0601-quad: the four-wheel reference app
+
+`m0601-quad` drives four wheels as one skid-steer rover and doubles as
+the reference implementation for multi-motor use of the library: a
+TOML wheel map (`wheels.toml`) validated fail-closed, a single pilot
+thread owning the bus at 55.6 Hz, latched fault handling with manual
+re-arm, a 2×2 terminal dashboard, CSV logging, and a `--dry-run` mode
+that opens no port. Bring-up order: `check --probe` → `monitor` →
+`jog`/`calibrate` → `drive`.
+
 ## Wiring checklist (no motors found?)
 
 - 18 V power on?

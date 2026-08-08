@@ -1,0 +1,83 @@
+# m0601-quad wheel map. This file is the single durable record of which
+# motor ID sits at which corner of the chassis — treat it like wiring.
+#
+# `m0601-quad check` validates it and prints the resolved table;
+# `m0601-quad calibrate` walks each wheel and prints corrected `invert`
+# lines to paste back here (it never writes this file itself).
+
+[bus]
+port = "/dev/ttyUSB0"
+cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
+                    # drive interval drops below the 50 Hz floor and it
+                    # coasts a little every cycle. 18 leaves 2 ms of margin.
+                    # NB the bus itself needs ~17.4 ms of this (4 drives +
+                    # poll, each with the enforced gap), so `check` warns
+                    # that cycle slack is thin. The 20 ms floor caps the
+                    # total budget: more cycle slack costs coast margin,
+                    # and vice versa — only a measured, smaller min_gap
+                    # buys both.
+min_gap_ms = 2.0    # -> Bus::with_min_gap; idle AFTER each frame, so
+                    # frame-to-frame spacing is ~2.9 ms (0.9 ms frame + gap).
+                    # A floor, not a schedule; tune from `check --probe`.
+reply_wait_ms = 3.0 # per-poll reply window. Short on purpose: the bus is
+                    # locked for its whole duration.
+
+[limits]
+max_rpm = 120          # 100% throttle commands exactly this (wheel max 330)
+accel = 5              # NEVER 1 on a vehicle: a big step at accel 1 can trip
+                       # the motor's 3 A bus-overcurrent on a loaded wheel,
+                       # and four wheels launch off one supply. 5 is
+                       # empirical — the vendor sources contradict each other
+                       # on this byte's unit; raise it if launches still trip.
+ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
+                       # ramp. All-stop and fault stops BYPASS it.
+current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp
+current_trip_ms = 400.0 # debounce; start-up inrush is normal and shorter
+stale_ms = 500.0       # telemetry older than this: warn (one missed poll is
+                       # expected — each wheel is polled every 4th cycle)
+dead_ms = 1500.0       # telemetry older than this: stop the vehicle. Three
+                       # driving wheels + one unknown yaws the machine.
+
+[log]
+path = "quad.csv"
+
+# One block per corner, front-to-back like the dashboard grid.
+# side accepts left|right (aliases: driver|pass). end accepts front|rear.
+#
+# invert   = what YOU observed (calibrate tells you which to flip).
+# mirrored = the SKU's mechanical build (FIT1042 left / FIT1038 right).
+#            Nothing in this repo records which IDs are the mirrored SKU,
+#            so both default false and only their XOR matters — the
+#            dashboard shows the effective direction as a REV badge.
+
+[[wheel]]
+id = 0x03
+name = "front driver"
+side = "driver"
+end = "front"
+invert = false
+mirrored = false
+
+[[wheel]]
+id = 0x04
+name = "front pass"
+side = "pass"
+end = "front"
+invert = false
+mirrored = false
+
+[[wheel]]
+id = 0x01
+name = "rear driver"
+side = "driver"
+end = "rear"
+invert = false
+mirrored = false
+
+[[wheel]]
+id = 0x02
+name = "rear pass"
+side = "pass"
+end = "rear"
+invert = false
+mirrored = false
