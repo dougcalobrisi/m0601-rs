@@ -142,7 +142,13 @@ coasts, per protocol. Keep the wheel clear before spinning it.
 
 RS485 is multi-drop: several motors share one A/B pair, each with a unique
 ID (`0x01..=0xFE` — assign them one at a time with `m0601 set-id`). A `Bus`
-owns the port and mints cheap, cloneable, thread-safe per-motor handles;
+owns the port and mints cheap, cloneable, thread-safe per-motor handles.
+The bus enforces a minimum idle gap between frames so no two can overlap on
+the half-duplex wire (`with_min_gap` tunes it — drive frames elicit replies
+even when unread, so unspaced sends corrupt), stops or mode-switches a
+whole vehicle at once (`safe_stop_all` / `set_mode_all`, round-major so N
+motors stop in the same ~300 ms as one), and requests low-latency delivery
+from the kernel to defeat the FTDI 16 ms latency timer.
 `mirrored(true)` makes "positive = robot forward" hold on a mirrored wheel
 by negating velocity/current setpoints and flipping reported speed/current
 signs (position passes through — angle mirroring depends on your mechanical

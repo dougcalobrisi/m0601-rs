@@ -21,7 +21,7 @@
 //! ```
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::Result;
 use crate::protocol::{
@@ -42,12 +42,147 @@ const SET_ID_SETTLE: Duration = Duration::from_millis(500);
 /// Gap between the frames of a [`M0601::safe_stop`] sequence (50 Hz).
 const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 
+/// Default minimum idle gap enforced between frames on a bus — see
+/// [`Bus::with_min_gap`].
+///
+/// Sized to cover one reply frame (~0.9 ms at 115200 baud) plus an
+/// allowance for the motor's turnaround, so the reply a fire-and-forget
+/// drive frame elicits cannot still be on the wire when the next frame
+/// starts. The turnaround component is an estimate, not a measurement —
+/// when tighter scheduling matters, measure it and pass the real number to
+/// [`Bus::with_min_gap`].
+pub const DEFAULT_MIN_GAP: Duration = Duration::from_micros(2500);
+
 /// Poison-tolerant lock. The guarded transport holds no invariants a panic
 /// could corrupt mid-update (each call is a complete frame exchange), and
 /// motor I/O — above all the stop paths — must keep working even if another
 /// thread panicked.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The shared state behind one physical bus: the transport plus the pacing
+/// bookkeeping that keeps frames from overlapping on the half-duplex wire.
+/// One lock guards both, so the idle-gap accounting cannot race the I/O it
+/// meters — the gap holds across every handle, on every thread.
+struct Port<T> {
+    transport: T,
+    /// When the last transmitting operation completed.
+    last_tx: Option<Instant>,
+    /// Minimum bus-idle time between that and the next TX.
+    min_gap: Duration,
+}
+
+impl<T: Transport> Port<T> {
+    /// How much longer the bus must stay idle before the next TX may start.
+    /// Routed through [`Transport::pace`] so mocks never wait.
+    fn gap_remaining(&self) -> Duration {
+        match self.last_tx {
+            Some(at) => self
+                .transport
+                .pace(self.min_gap.saturating_sub(at.elapsed())),
+            None => Duration::ZERO,
+        }
+    }
+}
+
+/// Run one transmitting operation against the bus, first waiting out its
+/// minimum idle gap ([`Bus::with_min_gap`]).
+///
+/// The wait happens *outside* the lock and the gap is then re-checked, so a
+/// competing handle that transmitted during the sleep pushes this frame
+/// further back rather than overlapping it. `last_tx` is stamped when the
+/// operation returns: for a fire-and-forget send that is the moment the
+/// frame finished draining to the wire, and the gap that follows is what
+/// keeps the unread reply it elicits clear of the next frame.
+fn with_gap<T: Transport, R>(
+    port: &Mutex<Port<T>>,
+    mut op: impl FnMut(&mut T) -> Result<R>,
+) -> Result<R> {
+    loop {
+        let mut guard = lock(port);
+        let wait = guard.gap_remaining();
+        if wait.is_zero() {
+            let result = op(&mut guard.transport);
+            guard.last_tx = Some(Instant::now());
+            return result;
+        }
+        drop(guard);
+        std::thread::sleep(wait);
+    }
+}
+
+/// One interleaved round of a grouped sequence: the same step's frame goes
+/// to every motor in `ids`, then the rest of the round is slept out against
+/// an absolute `deadline` — so the round period is what the caller chose,
+/// independent of motor count (for as long as the frames fit inside it).
+///
+/// Every frame is attempted even after an error — this runs on shutdown
+/// paths where "keep telling the other motors to stop" beats propagating
+/// the first failure. The first error is returned for callers that do want
+/// it.
+fn send_round<T: Transport>(
+    port: &Mutex<Port<T>>,
+    ids: &[u8],
+    frame_for: impl Fn(u8) -> Frame,
+    deadline: Instant,
+) -> Result<()> {
+    let mut result = Ok(());
+    for &id in ids {
+        let frame = frame_for(id);
+        if let Err(e) = with_gap(port, |t| t.send(&frame))
+            && result.is_ok()
+        {
+            result = Err(e);
+        }
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let sleep = lock(port).transport.pace(remaining);
+    if !sleep.is_zero() {
+        std::thread::sleep(sleep);
+    }
+    result
+}
+
+/// The one safe-stop implementation: [`M0601::safe_stop`] calls it with a
+/// single ID, [`Bus::safe_stop_all`] with the whole vehicle. Round-major —
+/// five velocity-mode rounds, five velocity-0 rounds, five brake rounds,
+/// 20 ms apart — so every motor is told to stop in step and N motors take
+/// the same ~300 ms as one. Best-effort: errors are swallowed, every frame
+/// is attempted.
+fn stop_all<T: Transport>(port: &Mutex<Port<T>>, ids: &[u8]) {
+    if ids.is_empty() {
+        return;
+    }
+    let mut deadline = Instant::now();
+    for step in 0..15u8 {
+        deadline += SAFE_STOP_GAP;
+        let _ = send_round(
+            port,
+            ids,
+            |id| match step {
+                0..=4 => frame_mode(id, Mode::Velocity),
+                5..=9 => frame_velocity(id, 0, 1),
+                _ => frame_brake(id),
+            },
+            deadline,
+        );
+    }
+}
+
+/// The one mode-switch implementation: five rounds of `0xA0` frames, 20 ms
+/// apart, as the protocol requires. [`M0601::set_mode`] calls it with a
+/// single ID, [`Bus::set_mode_all`] with several.
+fn mode_all<T: Transport>(port: &Mutex<Port<T>>, ids: &[u8], mode: Mode) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut deadline = Instant::now();
+    for _ in 0..5 {
+        deadline += MODE_REPEAT_GAP;
+        send_round(port, ids, |id| frame_mode(id, mode), deadline)?;
+    }
+    Ok(())
 }
 
 /// Strip a leading half-duplex TX echo and split what remains into whole
@@ -110,8 +245,46 @@ pub struct ScanReport {
 /// bus). Per-motor operations live on the [`M0601`] handles minted by
 /// [`motor`](Self::motor).
 pub struct Bus<T: Transport = SerialTransport> {
-    transport: Arc<Mutex<T>>,
+    port: Arc<Mutex<Port<T>>>,
     timeout: Duration,
+}
+
+// Manual impl: buses are cheap to clone regardless of whether T is Clone —
+// a clone is another handle on the same physical port (mirrors M0601).
+// Needed by callers that keep one Bus in a control loop and another in a
+// stop guard or signal handler.
+impl<T: Transport> Clone for Bus<T> {
+    fn clone(&self) -> Self {
+        Self {
+            port: Arc::clone(&self.port),
+            timeout: self.timeout,
+        }
+    }
+}
+
+/// Read the shared `min_gap` for a `Debug` impl without ever blocking. Debug
+/// can run from a panic path that already holds the port lock (a stop guard
+/// unwinding mid-send), so this uses `try_lock` and reports `None` on
+/// contention rather than deadlocking the formatter. A poisoned lock still
+/// yields the value — the crate is poison-tolerant everywhere else too.
+fn peek_min_gap<T: Transport>(port: &Mutex<Port<T>>) -> Option<Duration> {
+    match port.try_lock() {
+        Ok(p) => Some(p.min_gap),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner().min_gap),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+// Manual impl: T need not be Debug, and the port mutex must not be *blocked
+// on* just to format — `peek_min_gap` degrades to `None` rather than
+// deadlocking if Debug runs from a path already holding the lock.
+impl<T: Transport> std::fmt::Debug for Bus<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bus")
+            .field("timeout", &self.timeout)
+            .field("min_gap", &peek_min_gap(&self.port))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Bus<SerialTransport> {
@@ -131,9 +304,52 @@ impl<T: Transport> Bus<T> {
     /// Build a bus over any [`Transport`] (mocks included).
     pub fn with_transport(transport: T, timeout: Duration) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            port: Arc::new(Mutex::new(Port {
+                transport,
+                last_tx: None,
+                min_gap: DEFAULT_MIN_GAP,
+            })),
             timeout,
         }
+    }
+
+    /// Set the minimum idle time enforced between consecutive frames, so no
+    /// two frames can overlap on the half-duplex bus. It applies to every
+    /// send from every handle minted from this bus, so back-to-back calls
+    /// and multi-threaded callers are both safe.
+    ///
+    /// The gap lives on the shared port, not on this handle: despite the
+    /// by-value builder shape, calling it on one clone changes the gap for
+    /// *every* clone and every motor handle on the same bus. There is one
+    /// gap per physical bus, not one per handle — set it once at open time.
+    ///
+    /// This is a **floor, not an exact spacing**: USB adapters and OS
+    /// scheduling can stretch any individual gap, and the only guarantee is
+    /// that the bus stays idle for *at least* this long between frames.
+    /// Defaults to [`DEFAULT_MIN_GAP`]; `Duration::ZERO` opts out entirely,
+    /// for callers running their own scheduler. Set it from a turnaround
+    /// you measured, not from a guess.
+    ///
+    /// # Why this exists
+    ///
+    /// Every drive (`0x64`) frame elicits a reply even when nothing reads
+    /// it. Two drive frames sent back-to-back therefore put the second on
+    /// the wire while the first frame's reply is still transmitting; both
+    /// corrupt, and in a periodic loop the *same* frame corrupts every
+    /// cycle — one motor simply never moves. Comparable protocols mandate
+    /// exactly this idle floor (Modbus RTU's 3.5-character silence,
+    /// CANopen's PDO inhibit time); the M0601 leaves it to the host, so
+    /// the bus enforces it here.
+    #[must_use]
+    pub fn with_min_gap(self, gap: Duration) -> Self {
+        lock(&self.port).min_gap = gap;
+        self
+    }
+
+    /// The enforced minimum idle gap between frames
+    /// ([`with_min_gap`](Self::with_min_gap)).
+    pub fn min_gap(&self) -> Duration {
+        lock(&self.port).min_gap
     }
 
     /// A driver handle for the motor at `id` (validated: `0x01..=0xFE`).
@@ -143,7 +359,7 @@ impl<T: Transport> Bus<T> {
     pub fn motor(&self, id: u8) -> Result<M0601<T>> {
         protocol::validate_id(id)?;
         Ok(M0601 {
-            transport: Arc::clone(&self.transport),
+            port: Arc::clone(&self.port),
             id,
             timeout: self.timeout,
             mirrored: false,
@@ -158,7 +374,7 @@ impl<T: Transport> Bus<T> {
     /// Send an arbitrary frame and return the raw reply bytes (may be
     /// empty). Powers the CLI's `raw` subcommand.
     pub fn send_raw(&self, frame: &[u8], wait: Duration) -> Result<Vec<u8>> {
-        lock(&self.transport).send_recv(frame, wait)
+        with_gap(&self.port, |t| t.send_recv(frame, wait))
     }
 
     /// Discover motor IDs on the bus.
@@ -215,7 +431,7 @@ impl<T: Transport> Bus<T> {
         // and "the bus is silent" (no motors) demand opposite responses
         // from the caller.
         let query = frame_id_query();
-        let resp = lock(&self.transport).send_recv(&query, BROADCAST_WAIT)?;
+        let resp = with_gap(&self.port, |t| t.send_recv(&query, BROADCAST_WAIT))?;
         let payload = resp.strip_prefix(query.as_slice()).unwrap_or(&resp);
         let mut garbled = false;
         match frames(&query, &resp) {
@@ -238,7 +454,7 @@ impl<T: Transport> Bus<T> {
             }
             progress(id);
             let probe = frame_feedback(id);
-            let resp = lock(&self.transport).send_recv(&probe, self.timeout)?;
+            let resp = with_gap(&self.port, |t| t.send_recv(&probe, self.timeout))?;
             // A valid reply is a whole frame carrying the probed ID. The
             // alignment check matters here too: the probe's own first
             // byte *is* `id`, so a partial echo would answer every probe
@@ -280,7 +496,7 @@ impl<T: Transport> Bus<T> {
         self.pause(SET_ID_SETTLE);
 
         let query = frame_id_query();
-        let resp = lock(&self.transport).send_recv(&query, BROADCAST_WAIT)?;
+        let resp = with_gap(&self.port, |t| t.send_recv(&query, BROADCAST_WAIT))?;
         Ok(frames(&query, &resp)
             .into_iter()
             .flatten()
@@ -288,23 +504,77 @@ impl<T: Transport> Bus<T> {
             .find(|b| (0x01..=0xFE).contains(b)))
     }
 
+    /// Best-effort interleaved controlled stop for every motor in `ids`.
+    ///
+    /// Same sequence and guarantees as [`M0601::safe_stop`] — establish
+    /// velocity mode, five velocity-0 frames, five brake frames — but
+    /// round-major: each step's frame goes to every motor before the shared
+    /// 20 ms gap, so N motors stop in the same ~300 ms as one. Stopping
+    /// motors one at a time instead takes N × 300 ms, during which the
+    /// not-yet-stopped wheels coast — on a skid-steer chassis, one braked
+    /// wheel against three coasting ones is an uncommanded yaw. Rounds are
+    /// paced on absolute deadlines, so the period does not stretch with
+    /// motor count — as long as the round's frames fit inside it. With enough
+    /// motors that `ids.len() × (frame_time + min_gap)` exceeds the 20 ms
+    /// round, a round runs long and the next simply starts late (the stop
+    /// still completes; it just takes more than ~300 ms).
+    ///
+    /// This is a shutdown path — it runs from quit handlers, panic unwinds
+    /// and signal handlers, so it must not fail: it returns `()`, swallows
+    /// I/O errors, attempts every frame regardless, and never panics.
+    /// An empty `ids` is a no-op. IDs are used as given (no validation —
+    /// refusing to stop is worse than addressing a motor that isn't there).
+    pub fn safe_stop_all(&self, ids: &[u8]) {
+        stop_all(&self.port, ids);
+    }
+
+    /// Switch every motor in `ids` into `mode`, round-major: each of the
+    /// protocol's five `0xA0` repetitions goes to every motor before the
+    /// shared 20 ms gap, ~100 ms total regardless of motor count. The
+    /// motors send no acknowledgement.
+    ///
+    /// Mode frames elicit no reply, which is exactly what makes batching
+    /// them this tightly safe; drive frames are all answered, so their
+    /// spacing floor is [`with_min_gap`](Self::with_min_gap) instead.
+    ///
+    /// Every ID is validated before any frame is sent, so a bad ID fails the
+    /// whole call untouched. An *I/O* error partway through is different: the
+    /// round it occurs in is completed (every motor still gets that frame),
+    /// but the remaining rounds are skipped and the error is returned — so on
+    /// a write failure some motors may have received fewer than the five
+    /// repetitions the protocol wants. The switch is not atomic across the
+    /// wire; treat an `Err` as "the group mode may be inconsistent" and
+    /// recover (re-issue, or [`safe_stop_all`](Self::safe_stop_all)).
+    ///
+    /// As with [`M0601::set_mode`], switching into [`Mode::Position`] requires
+    /// the wheel to be turning slower than 10 RPM.
+    pub fn set_mode_all(&self, ids: &[u8], mode: Mode) -> Result<()> {
+        for &id in ids {
+            protocol::validate_id(id)?;
+        }
+        mode_all(&self.port, ids, mode)
+    }
+
     /// Recover the transport, if this `Bus` and all its motors are dropped
     /// (useful for inspecting a mock in tests).
     pub fn into_transport(self) -> Option<T> {
-        Arc::into_inner(self.transport)
-            .map(|m| m.into_inner().unwrap_or_else(PoisonError::into_inner))
+        Arc::into_inner(self.port).map(|m| {
+            m.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .transport
+        })
     }
 
     /// Send under the lock, then observe the gap *outside* it.
     fn send_paced(&self, frame: &[u8], gap: Duration) -> Result<()> {
-        lock(&self.transport).send(frame)?;
+        with_gap(&self.port, |t| t.send(frame))?;
         self.pause(gap);
         Ok(())
     }
 
     /// Sleep for the transport's paced version of `d`, without the lock.
     fn pause(&self, d: Duration) {
-        let d = lock(&self.transport).pace(d);
+        let d = lock(&self.port).transport.pace(d);
         if !d.is_zero() {
             std::thread::sleep(d);
         }
@@ -342,7 +612,7 @@ impl<T: Transport> Bus<T> {
 /// an angle (e.g. `360° − x`) depends on your mechanical convention — and
 /// [`Feedback::raw`] always keeps the unmodified wire frame.
 pub struct M0601<T: Transport = SerialTransport> {
-    transport: Arc<Mutex<T>>,
+    port: Arc<Mutex<Port<T>>>,
     id: u8,
     timeout: Duration,
     mirrored: bool,
@@ -352,11 +622,25 @@ pub struct M0601<T: Transport = SerialTransport> {
 impl<T: Transport> Clone for M0601<T> {
     fn clone(&self) -> Self {
         Self {
-            transport: Arc::clone(&self.transport),
+            port: Arc::clone(&self.port),
             id: self.id,
             timeout: self.timeout,
             mirrored: self.mirrored,
         }
+    }
+}
+
+// Manual impl: T need not be Debug, and the port mutex must not be *blocked
+// on* just to format — `peek_min_gap` degrades to `None` rather than
+// deadlocking if Debug runs from a path already holding the lock.
+impl<T: Transport> std::fmt::Debug for M0601<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("M0601")
+            .field("id", &self.id)
+            .field("timeout", &self.timeout)
+            .field("mirrored", &self.mirrored)
+            .field("min_gap", &peek_min_gap(&self.port))
+            .finish_non_exhaustive()
     }
 }
 
@@ -401,14 +685,17 @@ impl<T: Transport> M0601<T> {
     /// Recover the transport, if this is the last handle on the bus
     /// (useful for inspecting a mock in tests).
     pub fn into_transport(self) -> Option<T> {
-        Arc::into_inner(self.transport)
-            .map(|m| m.into_inner().unwrap_or_else(PoisonError::into_inner))
+        Arc::into_inner(self.port).map(|m| {
+            m.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .transport
+        })
     }
 
     /// Send an arbitrary frame and return the raw reply bytes (may be
     /// empty).
     pub fn send_raw(&mut self, frame: &[u8], wait: Duration) -> Result<Vec<u8>> {
-        lock(&self.transport).send_recv(frame, wait)
+        with_gap(&self.port, |t| t.send_recv(frame, wait))
     }
 
     /// Strip a leading half-duplex TX echo, parse, and reject frames from
@@ -466,7 +753,7 @@ impl<T: Transport> M0601<T> {
     /// loop with a short `wait` (~6 ms). Mirrored handles flip the signs of
     /// the parsed speed/current (the raw frame is untouched).
     pub fn transact(&mut self, frame: &Frame, wait: Duration) -> Result<Option<Feedback>> {
-        let rx = lock(&self.transport).send_recv(frame, wait)?;
+        let rx = with_gap(&self.port, |t| t.send_recv(frame, wait))?;
         Ok(self.parse_reply(frame, &rx))
     }
 
@@ -488,11 +775,7 @@ impl<T: Transport> M0601<T> {
     /// Before switching to [`Mode::Position`], the motor must be turning
     /// slower than 10 RPM.
     pub fn set_mode(&mut self, mode: Mode) -> Result<()> {
-        let frame = frame_mode(self.id, mode);
-        for _ in 0..5 {
-            self.send_paced(&frame, MODE_REPEAT_GAP)?;
-        }
-        Ok(())
+        mode_all(&self.port, &[self.id], mode)
     }
 
     /// Send one velocity drive frame (clamped to ±330 RPM, accel 1); a
@@ -524,7 +807,8 @@ impl<T: Transport> M0601<T> {
         } else {
             rpm
         };
-        lock(&self.transport).send(&frame_velocity(self.id, rpm, accel))
+        let frame = frame_velocity(self.id, rpm, accel);
+        with_gap(&self.port, |t| t.send(&frame))
     }
 
     /// Send one current drive frame (`i16` ≈ −8 A..+8 A); a mirrored handle
@@ -536,20 +820,23 @@ impl<T: Transport> M0601<T> {
         } else {
             value
         };
-        lock(&self.transport).send(&frame_current(self.id, value))
+        let frame = frame_current(self.id, value);
+        with_gap(&self.port, |t| t.send(&frame))
     }
 
     /// Send one position drive frame (clamped to `0..=32767` = 0°..360°).
     /// NOT mirror-adjusted — see the type-level docs.
     /// Must be resent at ≥50 Hz to hold — see the type-level docs.
     pub fn drive_position(&mut self, raw: u16) -> Result<()> {
-        lock(&self.transport).send(&frame_position(self.id, raw))
+        let frame = frame_position(self.id, raw);
+        with_gap(&self.port, |t| t.send(&frame))
     }
 
     /// Send one electric-brake frame (velocity mode only).
     /// Must be resent at ≥50 Hz to keep braking — see the type-level docs.
     pub fn brake(&mut self) -> Result<()> {
-        lock(&self.transport).send(&frame_brake(self.id))
+        let frame = frame_brake(self.id);
+        with_gap(&self.port, |t| t.send(&frame))
     }
 
     /// Best-effort controlled stop: force velocity mode, then five
@@ -573,30 +860,6 @@ impl<T: Transport> M0601<T> {
     /// protocol fail-safe applies: no frames means the motor coasts to a
     /// stop.)
     pub fn safe_stop(&mut self) {
-        // Unacknowledged by the motor, so send the protocol's five copies
-        // and press on regardless — same best-effort contract as the rest.
-        let mode = frame_mode(self.id, Mode::Velocity);
-        for _ in 0..5 {
-            let _ = self.send_paced(&mode, MODE_REPEAT_GAP);
-        }
-
-        let zero = frame_velocity(self.id, 0, 1);
-        let brake = frame_brake(self.id);
-        for frame in [
-            &zero, &zero, &zero, &zero, &zero, &brake, &brake, &brake, &brake, &brake,
-        ] {
-            let _ = self.send_paced(frame, SAFE_STOP_GAP);
-        }
-    }
-
-    /// Send under the lock, then observe the gap *outside* it — never hold
-    /// the shared bus while sleeping.
-    fn send_paced(&self, frame: &[u8], gap: Duration) -> Result<()> {
-        lock(&self.transport).send(frame)?;
-        let gap = lock(&self.transport).pace(gap);
-        if !gap.is_zero() {
-            std::thread::sleep(gap);
-        }
-        Ok(())
+        stop_all(&self.port, &[self.id]);
     }
 }

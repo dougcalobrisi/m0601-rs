@@ -55,6 +55,32 @@ fn bus_example() -> m0601::Result<()> {
     Ok(())
 }
 
+fn multi_motor_example() -> m0601::Result<()> {
+    let ids = [0x01, 0x02, 0x03, 0x04];
+    let bus = Bus::open("/dev/ttyUSB0", Duration::from_millis(150))?
+        .with_min_gap(Duration::from_micros(2500));
+    assert!(bus.min_gap() > Duration::ZERO);
+    bus.set_mode_all(&ids, Mode::Velocity)?;
+    let mut wheels = Vec::new();
+    for id in ids {
+        wheels.push(bus.motor(id)?);
+    }
+    for wheel in &mut wheels {
+        wheel.drive_velocity(60)?; // the bus spaces these on the wire
+    }
+    let guard = bus.clone(); // e.g. for a stop guard / signal handler
+    guard.safe_stop_all(&ids);
+    Ok(())
+}
+
+fn low_latency_example() -> m0601::Result<()> {
+    let transport = m0601::SerialTransport::open("/dev/ttyUSB0", Duration::from_millis(150))?;
+    if !transport.low_latency() {
+        eprintln!("[!] low-latency not set; see the udev rule in USAGE.md");
+    }
+    Ok(())
+}
+
 fn mock_example() -> m0601::Result<()> {
     let mock = MockTransport::with_replies([vec![
         0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00, 0x00,

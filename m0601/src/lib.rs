@@ -77,6 +77,27 @@
 //! byte 9 (verified on hardware), but telemetry is **never rejected on
 //! it** — [`Feedback::crc_ok`] is informational only; see `PROTOCOL.md`.
 //!
+//! # Multiple motors on one bus
+//!
+//! [`Bus`] enforces a minimum idle gap between frames
+//! ([`Bus::with_min_gap`]) so no two frames — or a frame and the reply an
+//! earlier drive frame elicited — can overlap on the half-duplex pair;
+//! [`Bus::set_mode_all`] and [`Bus::safe_stop_all`] switch or stop every
+//! wheel round-major, so a vehicle stops in the same ~300 ms as one motor.
+//! Budget the wire: each motor needs its drive frame at ≥50 Hz, so N
+//! motors put ≥N×50 frames/s (plus replies, plus gaps) through one bus —
+//! see `USAGE.md` for the arithmetic.
+//!
+//! Coming from another fieldbus or motor-control ecosystem, the concepts
+//! map directly:
+//!
+//! | Here | Elsewhere |
+//! |------|-----------|
+//! | enforced inter-frame gap ([`Bus::with_min_gap`]) | Modbus RTU's 3.5-character silence; CANopen's PDO inhibit time |
+//! | coast when drive frames stop (the 50 Hz floor) | a command watchdog / failsafe timeout, permanently enabled |
+//! | [`Bus::set_mode_all`] / [`Bus::safe_stop_all`] (reply-less batching) | Dynamixel's broadcast Sync Write |
+//! | automatic low-latency request ([`SerialTransport::low_latency`](transport::SerialTransport::low_latency)) | pyserial's `set_low_latency_mode(True)` |
+//!
 //! # Control modes
 //!
 //! | [`Mode`]              | Wire | Value range        | Meaning        |
@@ -144,17 +165,22 @@
 //! - [navigation_robot, independent C driver](https://github.com/Il1yasviel/navigation_robot)
 //! - [MotorLink, independent implementation](https://github.com/MukeshSankhla/MotorLink)
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the single place unsafe exists is the pair of Linux
+// TIOCGSERIAL/TIOCSSERIAL ioctls in `low_latency` (scoped allow there, with
+// the safety argument). Everything else remains unsafe-free.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod bus;
 pub mod error;
+#[cfg(target_os = "linux")]
+mod low_latency;
 pub mod protocol;
 pub mod transport;
 pub mod types;
 
-pub use bus::{Bus, M0601, ScanReport};
+pub use bus::{Bus, DEFAULT_MIN_GAP, M0601, ScanReport};
 pub use error::{Error, Result};
 pub use protocol::ReplyKind;
 pub use transport::{MockTransport, SerialTransport, Transport};
-pub use types::{Faults, Feedback, Mode};
+pub use types::{Faults, Feedback, Mode, Telemetry};

@@ -16,5 +16,11 @@ categories = ["embedded", "hardware-support", "science::robotics"]
 serialport = { workspace = true }
 thiserror = { workspace = true }
 
+# For the ASYNC_LOW_LATENCY ioctl that defeats the FTDI 16 ms latency timer
+# (see src/low_latency.rs). serialport already depends on libc via nix, so
+# this adds no new code to the build.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

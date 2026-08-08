@@ -49,6 +49,7 @@ pub trait Transport {
 pub struct SerialTransport {
     name: String,
     port: Box<dyn SerialPort>,
+    low_latency: bool,
 }
 
 impl SerialTransport {
@@ -57,20 +58,39 @@ impl SerialTransport {
     /// `timeout` is a backstop for individual OS reads; per-transaction
     /// latency is governed by the `wait` passed to
     /// [`send_recv`](Transport::send_recv), not by this value.
+    ///
+    /// On Linux this also asks the kernel for low-latency delivery
+    /// (`ASYNC_LOW_LATENCY` — what pyserial calls `set_low_latency_mode`),
+    /// best-effort: FTDI adapters otherwise hold received bytes for up to
+    /// their 16 ms latency timer, longer than this protocol's entire reply
+    /// window. Failure is not an error; check
+    /// [`low_latency`](Self::low_latency) when reply timing matters.
     pub fn open(path: &str, timeout: Duration) -> Result<Self> {
-        let port = serialport::new(path, BAUD)
+        let builder = serialport::new(path, BAUD)
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
-            .timeout(timeout)
-            .open()
-            .map_err(|source| Error::Serial {
-                port: path.to_owned(),
-                source,
-            })?;
+            .timeout(timeout);
+        let serial_err = |source| Error::Serial {
+            port: path.to_owned(),
+            source,
+        };
+
+        #[cfg(target_os = "linux")]
+        let (port, low_latency): (Box<dyn SerialPort>, bool) = {
+            use std::os::fd::AsRawFd;
+            let native = builder.open_native().map_err(serial_err)?;
+            let low_latency = crate::low_latency::enable(native.as_raw_fd()).is_ok();
+            (Box::new(native), low_latency)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (port, low_latency): (Box<dyn SerialPort>, bool) =
+            (builder.open().map_err(serial_err)?, false);
+
         Ok(Self {
             name: path.to_owned(),
             port,
+            low_latency,
         })
     }
 
@@ -79,11 +99,40 @@ impl SerialTransport {
         &self.name
     }
 
+    /// Whether the kernel accepted the low-latency request made by
+    /// [`open`](Self::open).
+    ///
+    /// `false` means the flag could not be set (non-Linux, or a driver
+    /// without the ioctl) — not necessarily that latency is high; only USB
+    /// bridge chips batch received bytes this way. If it matters and this
+    /// is `false`, set the FTDI timer via udev instead:
+    ///
+    /// ```text
+    /// # /etc/udev/rules.d/99-m0601.rules
+    /// ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
+    /// ```
+    ///
+    /// and verify with
+    /// `cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer`.
+    pub fn low_latency(&self) -> bool {
+        self.low_latency
+    }
+
     fn serial_err(&self, source: serialport::Error) -> Error {
         Error::Serial {
             port: self.name.clone(),
             source,
         }
+    }
+}
+
+// Manual impl: the boxed port is not Debug.
+impl std::fmt::Debug for SerialTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SerialTransport")
+            .field("name", &self.name)
+            .field("low_latency", &self.low_latency)
+            .finish_non_exhaustive()
     }
 }
 

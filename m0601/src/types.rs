@@ -238,3 +238,87 @@ impl Feedback {
         }
     }
 }
+
+/// Latest telemetry, plus the readings that only one reply layout carries
+/// and must be retained across the replies that don't.
+///
+/// This is protocol knowledge, not presentation: the winding temperature
+/// arrives only in query (`0x74`) replies, and the hi-res 16-bit angle only
+/// in drive replies ([`ReplyKind`] selects the layout). Any loop that mixes
+/// the two — the canonical shape is a drive frame every cycle and a query
+/// every Nth for temperature — would otherwise watch each reading flicker
+/// to `None` (or to the coarse 8-bit angle) as `fb` alternates between
+/// layouts. Feed every parsed reply to [`absorb`](Self::absorb) and read
+/// the retained fields instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Telemetry {
+    /// Most recent reply of either kind — the source of mode, speed,
+    /// current and faults, which decode identically in both layouts.
+    pub fb: Option<Feedback>,
+    /// Winding temperature from the most recent query (`0x74`) reply.
+    pub temp_c: Option<u8>,
+    /// Wheel angle from the most recent *drive* reply (hi-res 16-bit).
+    /// Held apart from `fb` so a query reply's coarse 8-bit angle doesn't
+    /// make a displayed position flicker between resolutions.
+    pub position_deg: Option<f32>,
+}
+
+impl Telemetry {
+    /// Store `fb` as latest, and separately retain the readings only one
+    /// layout carries: temperature (query replies) and the hi-res angle
+    /// (drive replies).
+    pub fn absorb(&mut self, fb: Feedback) {
+        if let Some(t) = fb.temp_c {
+            self.temp_c = Some(t);
+        }
+        if fb.kind == ReplyKind::Drive {
+            self.position_deg = Some(fb.position_deg);
+        }
+        self.fb = Some(fb);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Telemetry;
+    use crate::Feedback;
+    use crate::protocol::{ReplyKind, parse_feedback};
+
+    /// The same reply bytes decoded as either kind (temp 40 °C as a query).
+    fn fb(kind: ReplyKind) -> Feedback {
+        parse_feedback(&[0x01, 0x02, 0, 0, 0, 0x64, 0x28, 0x80, 0, 0], kind).expect("valid frame")
+    }
+
+    #[test]
+    fn absorb_retains_temperature_across_drive_replies() {
+        let mut t = Telemetry::default();
+        t.absorb(fb(ReplyKind::Drive));
+        assert_eq!(t.temp_c, None, "no query reply seen yet");
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(t.temp_c, Some(40));
+        t.absorb(fb(ReplyKind::Drive));
+        assert_eq!(t.temp_c, Some(40), "a drive reply must not clear it");
+        // fb always tracks the latest reply of either kind.
+        assert_eq!(t.fb.map(|fb| fb.kind), Some(ReplyKind::Drive));
+    }
+
+    #[test]
+    fn absorb_keeps_hi_res_drive_angle_across_a_query_reply() {
+        let mut t = Telemetry::default();
+        // A query reply before any drive reply: no hi-res angle retained yet
+        // (a UI falls back to the reply's own coarse position meanwhile).
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(t.position_deg, None, "no hi-res drive reply seen yet");
+        // A drive reply establishes the hi-res angle...
+        t.absorb(fb(ReplyKind::Drive));
+        let hi_res = t.position_deg.expect("drive reply sets the hi-res angle");
+        // ...and a later query reply must NOT overwrite it with its coarse
+        // 8-bit angle — that flicker is exactly what this field prevents.
+        t.absorb(fb(ReplyKind::Query));
+        assert_eq!(
+            t.position_deg,
+            Some(hi_res),
+            "a query reply must not downgrade the retained hi-res angle"
+        );
+    }
+}

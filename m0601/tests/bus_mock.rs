@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use m0601::protocol::{ReplyKind, frame_feedback, frame_id_query, frame_mode, frame_velocity};
+use m0601::protocol::{
+    ReplyKind, frame_brake, frame_feedback, frame_id_query, frame_mode, frame_velocity,
+};
 use m0601::{Bus, Error, M0601, MockTransport, Mode};
 
 const TIMEOUT: Duration = Duration::from_millis(150);
@@ -785,4 +787,103 @@ fn unmirrored_is_default_and_identity() {
     assert!(!m.is_mirrored());
     let fb = m.query().unwrap().expect("telemetry");
     assert_eq!(fb.speed_rpm, 100);
+}
+
+// ── Group operations ──
+
+#[test]
+fn safe_stop_all_is_round_major_across_motors() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    bus.safe_stop_all(&[0x01, 0x02, 0x03, 0x04]);
+    let mock = bus.into_transport().expect("no motors minted");
+    assert_eq!(mock.sent.len(), 60, "15 steps x 4 motors");
+
+    // Round-major: each step's frame reaches EVERY motor before the next
+    // step begins. Motor-major would stop one wheel at a time, and for
+    // 300 ms stretches the other three would coast — an uncommanded yaw on
+    // a skid-steer chassis.
+    for (step, round) in mock.sent.chunks(4).enumerate() {
+        for (i, id) in [0x01u8, 0x02, 0x03, 0x04].into_iter().enumerate() {
+            let expected = match step {
+                0..=4 => frame_mode(id, Mode::Velocity),
+                5..=9 => frame_velocity(id, 0, 1),
+                _ => frame_brake(id),
+            };
+            assert_eq!(round[i], expected.to_vec(), "step {step}, motor 0x{id:02X}");
+        }
+    }
+    // Literal spot-checks so the builders above aren't asserting against
+    // themselves: motor 0x01's frames match the single-motor safe_stop
+    // sequence byte for byte.
+    assert_eq!(mock.sent[0], vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
+    assert_eq!(
+        mock.sent[20],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFB]
+    );
+    assert_eq!(
+        mock.sent[40],
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1]
+    );
+}
+
+#[test]
+fn safe_stop_all_attempts_every_frame_on_io_failure() {
+    // Same contract as the single-motor path: the shutdown sequence never
+    // gives up early, so every motor keeps being told to stop.
+    let bus = Bus::with_transport(
+        MockTransport {
+            fail_io: true,
+            ..MockTransport::default()
+        },
+        TIMEOUT,
+    );
+    bus.safe_stop_all(&[0x01, 0x02, 0x03, 0x04]); // must not panic or bail
+    let mock = bus.into_transport().expect("no motors minted");
+    assert_eq!(mock.sent.len(), 60);
+}
+
+#[test]
+fn safe_stop_all_with_no_ids_is_a_no_op() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    bus.safe_stop_all(&[]);
+    assert!(bus.into_transport().expect("no motors").sent.is_empty());
+}
+
+#[test]
+fn set_mode_all_sends_five_rounds_per_motor() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    bus.set_mode_all(&[0x01, 0x02], Mode::Current).unwrap();
+    let mock = bus.into_transport().expect("no motors minted");
+    assert_eq!(mock.sent.len(), 10, "5 rounds x 2 motors");
+    for round in mock.sent.chunks(2) {
+        // Round-major and literal: last byte is the mode (0x01 = current),
+        // not a CRC.
+        assert_eq!(round[0], vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+        assert_eq!(round[1], vec![0x02, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+    }
+}
+
+#[test]
+fn set_mode_all_validates_every_id_before_sending() {
+    // A typo'd ID must surface before ANY motor changes mode — a partial
+    // group switch would leave the vehicle half in velocity, half in
+    // whatever it was in before.
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    assert!(matches!(
+        bus.set_mode_all(&[0x01, 0xFF], Mode::Velocity),
+        Err(Error::InvalidId(0xFF))
+    ));
+    assert!(bus.into_transport().expect("no motors").sent.is_empty());
+}
+
+#[test]
+fn a_cloned_bus_is_another_handle_on_the_same_port() {
+    // The clone exists for stop guards: one Bus in the control loop, one
+    // in the shutdown path, both talking to the same physical port.
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    let guard = bus.clone();
+    guard.safe_stop_all(&[0x01]);
+    drop(guard);
+    let mock = bus.into_transport().expect("last handle");
+    assert_eq!(mock.sent.len(), 15, "the clone's frames reached the port");
 }
