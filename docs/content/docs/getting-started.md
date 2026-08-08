@@ -5,65 +5,89 @@ weight: 2
 
 # Getting started
 
+This page gets you built, wired, and permitted. If you'd rather learn by doing,
+the [first-spin tutorial]({{< relref "tutorial" >}}) covers the same ground with a
+motor actually turning.
+
 ## Build & install
 
-Needs Rust **1.88** or newer (edition 2024 plus let-chains). Linux is the tested
-platform; the serial layer is portable, but the `/dev/ttyUSB0` paths and the
-`dialout` group below are Linux-specific.
+You need Rust **1.88** or newer — the crate uses edition 2024 and let-chains, so
+older toolchains won't compile it. Linux is the tested platform; the serial layer
+is portable, but the device paths and the `dialout` group below are Linux-isms.
 
 ```sh
 git clone https://github.com/dougcalobrisi/m0601-rs-test.git
 cd m0601-rs-test
 cargo build --release              # binary at target/release/m0601
-cargo install --path m0601-cli     # or install `m0601` into ~/.cargo/bin
+cargo install --path m0601-cli     # or drop `m0601` into ~/.cargo/bin
 ```
 
-## Hardware setup
+The install builds the `m0601-cli` crate, whose binary is named `m0601`. The
+library crate (also `m0601`) is a separate workspace member you depend on from your
+own project — see the [library guide]({{< relref "library" >}}).
 
-1. **Power**: 18 V DC on the 2-pin cable (red = +, black = GND). The motor is
-   silent on the bus until powered.
-2. **RS485**: white = A(+), orange = B(−) to your USB-RS485 adapter. The motor's
-   A/B labels are inverted relative to many adapters — **if nothing answers, swap
-   orange ↔ white** before debugging anything else.
-3. **Brown wire → GND.** It is not optional; floating it causes intermittent
-   comms errors.
-4. Cable runs over ~1 m: add a 120 Ω termination resistor across A/B.
-5. **Permissions** (Linux): if opening the port fails with a permission error,
-   `sudo usermod -aG dialout $USER`, then log out and back in.
+## Wiring, and why each wire matters
 
-## Sanity check
+The motor has two cables: a 2-pin power cable and a 4-pin signal cable. Getting any
+of the following wrong produces "nothing on the bus," so it's worth doing
+deliberately.
 
-Verify the whole chain in one command:
+**Power — 18 V DC** on the 2-pin cable, red to +, black to ground. The RS485
+transceiver is powered from this same supply, so a motor with no power isn't a
+motor answering with errors — it's silent. If a scan comes up empty, confirm 18 V
+before you suspect anything subtle.
+
+**RS485 — white is A(+), orange is B(−)** to your adapter. Here's the one that
+wastes the most time: the M0601's A/B labelling is inverted relative to a lot of
+USB-RS485 dongles. If nothing answers, **swap orange and white before you debug
+anything else.** It's the single most common cause of a dead bus, and it's a
+two-second test.
+
+**Brown wire to ground.** Brown is a reserved/shield line, and it is not optional —
+leave it floating and you get intermittent comms errors that look like flaky
+hardware, especially on longer cable runs.
+
+**Termination.** For cable runs over about a metre, put a 120 Ω resistor across A/B.
+Short bench setups usually work without it; long runs without it drop frames.
+
+## Serial-port permissions (Linux)
+
+Opening `/dev/ttyUSB0` as a normal user usually fails the first time with a
+permission error. That means your user isn't in the `dialout` group:
 
 ```sh
-m0601 scan          # should print the motor's ID within a few seconds
+sudo usermod -aG dialout $USER
+# then log out and back in — group membership is applied at login
 ```
 
-Nothing found? Work through the [wiring checklist]({{< relref
-"troubleshooting" >}}).
+The CLI detects this specific failure and prints the same hint, so you don't have
+to remember it. If a command dies with `[x] ... Permission denied`, this is why.
 
 ## Connection defaults
 
-The link is fixed at **115200 8N1, RS485 half-duplex** — there is no baud flag.
-Only three global options control the connection, valid before *or* after the
-subcommand:
+The link is fixed at **115200 baud, 8N1, half-duplex** — there is no baud flag,
+because the motor only speaks one rate. Three global options control the
+connection, and they're valid before *or* after the subcommand:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--port` | `/dev/ttyUSB0` | serial port device path |
-| `--id` | `0x01` | motor RS485 ID (hex `0x01` or decimal `1`) |
-| `--timeout` | `0.15` | reply wait in seconds (0–3600) |
+| `--port` | `/dev/ttyUSB0` | serial device path |
+| `--id` | `0x01` | motor address (hex `0x01` or decimal `1`) |
+| `--timeout` | `0.15` | reply wait, in seconds (0–3600) |
 
-Motors ship at ID `0x01`. Assign new IDs one at a time with
-[`set-id`]({{< relref "cli/set-id" >}}).
+Motors ship at ID `0x01`, so the defaults Just Work for a single fresh motor. Once
+you have more than one on the bus, give each a unique address with
+[`set-id`]({{< relref "cli/set-id" >}}) — one at a time, for reasons that page
+explains.
 
-## Before you spin it
+## Sanity check
 
-`control` and `drive` start driving the motor **immediately**, with no
-confirmation prompt. A direct-drive hub motor has no gearbox to slow it down, and
-the `1`–`5` presets reach 250 RPM.
+One command proves the whole chain — power, wiring, adapter, permissions, address:
 
-- Clear the wheel, and secure the chassis so it cannot drive itself off the bench.
-- Remember that **a zero setpoint does not mean "stop"** outside velocity mode.
-- `Ctrl-C` brakes. So does every other exit path — but only while the process is
-  alive to do it. On SIGKILL or power loss the motor coasts, per protocol.
+```sh
+m0601 scan
+```
+
+A motor should show up within a couple of seconds. If it doesn't, work back through
+the wiring above (start with the A/B swap), then see
+[Troubleshooting]({{< relref "troubleshooting" >}}).

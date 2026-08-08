@@ -3,11 +3,12 @@ title: Multi-motor bus
 weight: 5
 ---
 
-# Multi-motor robot: shared bus, mirroring, frame spacing
+# Multi-motor robots
 
-RS485 is multi-drop — all wheels share one A/B pair, each with its own ID (assign
-them one at a time with [`m0601 set-id`]({{< relref "../cli/set-id" >}})). A `Bus`
-owns the port and mints cheap, cloneable, thread-safe per-motor handles.
+RS485 is multi-drop: every wheel shares one A/B pair, each answering to a unique
+address. A `Bus` owns that shared port and mints per-motor handles that are cheap to
+clone and safe to move between threads — they all funnel through one physical port,
+with the coordination handled for you.
 
 ```rust
 use std::time::Duration;
@@ -15,66 +16,79 @@ use m0601::Bus;
 
 fn main() -> m0601::Result<()> {
     let bus = Bus::open("/dev/ttyUSB0", Duration::from_millis(150))?;
-    let mut left = bus.motor(0x01)?.mirrored(true); // FIT1042 (left)
-    let mut right = bus.motor(0x02)?;               // FIT1038 (right)
+    let mut left  = bus.motor(0x01)?.mirrored(true); // FIT1042, left side
+    let mut right = bus.motor(0x02)?;                // FIT1038, right side
 
-    // With the left wheel mirrored, "+100" moves the robot forward on both
-    // sides: setpoints are negated on the way out, and reported speed/current
-    // signs are flipped on the way in.
+    // Mirrored, "+100" drives the robot forward on both sides.
     left.drive_velocity(100)?;
-    right.drive_velocity(100)?;   // ...resend both at >=50 Hz
+    right.drive_velocity(100)?;   // ...and resend both at ≥50 Hz
     Ok(())
 }
 ```
 
-Position values are *not* mirror-adjusted (the correct transform depends on your
-mechanical convention), and `Feedback::raw` always holds the untouched wire bytes.
+## Mirroring
 
-## Why those back-to-back calls are safe
+On a two-sided robot the left and right wheels face opposite ways, so "forward" is
++RPM on one and −RPM on the other. `mirrored(true)` hides that: it negates
+velocity and current *setpoints* on the way out and flips the *signs* of reported
+speed and current on the way in, so your code speaks in robot-forward terms and both
+sides agree.
 
-Every drive (`0x64`) frame elicits a reply, even when nothing reads it. Sent with
-no gap, the second frame would go out while the first frame's reply is still on
-the half-duplex pair — both corrupt, and in a periodic loop the *same* frame
-corrupts every cycle, so one motor simply never moves.
+Position values pass through untouched — the right mirror transform for an angle
+depends on your mechanical convention (is mirrored-90° equal to 270°, or still 90°?),
+so the driver won't guess. And `Feedback::raw` always holds the untouched wire bytes
+regardless, if you need the ground truth. (A small tell that someone sweated the
+details: a mirrored zero current comes back as `+0.0`, not the `-0.0` that would
+print as `-0.000 A`.)
 
-The bus prevents this by enforcing a minimum idle gap between frames (default
-2.5 ms; `Bus::with_min_gap` tunes it, `Duration::ZERO` opts out). The gap is a
-property of the shared port, so it holds across cloned handles and threads: two
-threads *can* each drive their own wheel — but prefer one scheduler thread that
-owns all sends when cycle timing matters, because the gap only guarantees frames
-don't collide, not that they leave on schedule.
+## Why back-to-back sends are safe here
 
-## Budgeting more than two motors
+The two `drive_velocity` calls above go out one after another with no explicit delay,
+and that's fine — but only because the bus inserts a gap for you. It has to. Every
+drive frame elicits a reply even when nothing reads it, so two drive frames sent with
+no gap would put the second on the wire while the first's reply is still transmitting.
+Both corrupt. In a periodic loop the *same* frame corrupts every cycle, and the
+symptom is maddening: one motor simply never moves while everything else works.
 
-Each motor must see *its* drive frame at ≥50 Hz, so N motors need ≥N×50 frames/s
-through one bus, plus their replies, plus gaps. Four wheels at the default gap is
-~10 ms of bus occupancy per 20 ms cycle before any telemetry is read. Keep
-per-transaction reply waits short (the CLI's loops use 6 ms), read telemetry
-round-robin — one motor per cycle, not all four — and never *substitute* a query
-for a drive frame: the motor coasts through the hole.
+The bus enforces a minimum idle gap (2.5 ms by default) between frames to keep the
+reply one frame elicits clear of the next. It's a property of the shared port, so it
+holds across every cloned handle and every thread. `Bus::with_min_gap` tunes it —
+set it from a turnaround you measured, not a guess, and set it once at open time
+since there's one gap per physical bus, not one per handle. [The bus]({{< relref
+"../concepts/the-bus" >}}) covers the reasoning and the multi-motor timing budget.
 
-## Group operations
+## Group stops that don't yaw
 
-`Bus::set_mode_all` switches every wheel in ~100 ms and `Bus::safe_stop_all`
-stops the whole vehicle in the same ~300 ms as one wheel. Both go round-major
-(each step's frame to every motor, then the shared gap) — a vehicle whose wheels
-stop one at a time yaws while it does. `Bus` is `Clone`, so a stop guard or signal
-handler can hold its own handle to the same port.
+When you stop a vehicle, stopping the wheels *one at a time* is a bug. On a skid-steer
+chassis, one braked wheel against three still-coasting ones is an uncommanded yaw —
+the robot turns as it stops. `Bus::safe_stop_all` avoids that by going round-major:
+it sends each step of the stop sequence to *every* motor, then the next step to every
+motor, so all the wheels stop in step. N motors take the same ~300 ms as one.
 
-## USB adapter latency
-
-FTDI adapters hold received bytes for up to their 16 ms latency timer — longer
-than a whole reply window. `SerialTransport::open` asks the kernel for
-low-latency delivery automatically (`ASYNC_LOW_LATENCY`, needs no privileges on
-kernel ≥ 4.12); `SerialTransport::low_latency()` reports whether it stuck. If it
-didn't, set the timer with a udev rule instead:
-
-```text
-# /etc/udev/rules.d/99-m0601.rules
-ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
+```rust
+bus.safe_stop_all(&[0x01, 0x02, 0x03, 0x04]);   // best-effort, errors swallowed
+bus.set_mode_all(&[0x01, 0x02, 0x03, 0x04], Mode::Velocity)?;
 ```
 
-and verify with `cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer`.
+`safe_stop_all` is best-effort by design — it runs on shutdown paths, where "keep
+telling the other motors to stop" beats bailing on the first error. `Bus` is `Clone`,
+so a signal handler or stop guard can hold its own handle to the same port and stop
+everything from there.
 
-> Don't run `scan(0x01..=0xFE, ...)` concurrently with a drive loop on the same
-> bus — the scan holds the bus for ~254 × timeout and the driven motor will coast.
+## Budgeting the bus
+
+Each motor needs *its* drive frame at ≥50 Hz, so N motors put at least N×50 frames a
+second through one bus, plus the replies, plus the gaps. Four wheels at the default
+gap is roughly 10 ms of bus occupancy per 20 ms cycle before you read any telemetry.
+That's workable, but it means you should keep reply waits short (6 ms, like the CLI),
+read telemetry round-robin — one motor per cycle, not all four — and never *replace* a
+drive frame with a query, or that motor coasts through the hole. Don't run a full
+`scan` alongside a drive loop on the same bus either; the scan holds the wire for
+~254 timeouts and starves the loop.
+
+## See also
+
+- [Concepts → The bus]({{< relref "../concepts/the-bus" >}}) — the half-duplex
+  reasoning behind all of this.
+- [Concepts → Stopping safely]({{< relref "../concepts/stopping-safely" >}}) — the
+  round-major stop in detail.

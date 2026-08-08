@@ -3,10 +3,22 @@ title: info
 weight: 2
 ---
 
-# `info` — configuration + one-shot readout
+# `info` — config plus a live snapshot
 
 ```sh
-$ m0601 info
+m0601 info
+m0601 --id 0x02 info
+```
+
+`info` answers "is this motor there, and what does it say about itself right now?"
+It prints the connection configuration and the fixed ranges for each control mode,
+sends a single query, and shows one decoded reply. Nothing moves. It's the natural
+follow-up to `scan` and a handy scriptable presence check, because it exits non-zero
+when the motor doesn't answer.
+
+## Output
+
+```
 ================================================
   M0601 Configuration
 ================================================
@@ -27,8 +39,35 @@ $ m0601 info
 ================================================
 ```
 
-Prints the connection configuration plus one live telemetry readout. Exits
-nonzero when the motor doesn't reply — usable in scripts as a presence check.
+The top block is static — it's the fixed protocol limits, useful as a reminder of
+what each mode will accept. The bottom block is the live reading. A few things worth
+knowing about it:
 
-Uses the global `--port`, `--id`, and `--timeout` flags; it has no options of its
-own.
+- **Speed** is signed (`+0 RPM`); a negative number means the wheel is turning the
+  other way.
+- **Current** shows three decimals and rarely reads exactly zero even at rest —
+  that small offset is normal.
+- **Winding temp** comes straight from the query reply. If a future change ever left
+  it absent it renders as `--` rather than crashing, but in practice `info` always
+  has it.
+- **Error** reads `0x00  OK` when clean, or `0x{bits}  FAULT (names)` with the fault
+  bits spelled out when something has tripped.
+- **Raw frame** is the exact 10 bytes that came back, in case you want to check the
+  decode by hand against the [protocol reference]({{< relref "../protocol" >}}).
+
+## When the motor doesn't answer
+
+```
+  Live readout  : no valid response.
+  Check 18V power, wiring (brown->GND), A/B polarity, and --id.
+```
+
+This exits non-zero. It means the port opened fine but no clean reply came back —
+usually a wrong `--id`, or the RX half of the wiring. If `scan` found the motor but
+`info` can't read it, suspect the address first.
+
+## See also
+
+- [Telemetry and echo]({{< relref "../concepts/telemetry-and-echo" >}}) — how that
+  raw frame becomes the decoded fields.
+- [`monitor`]({{< relref "monitor" >}}) — the same reading, continuously.

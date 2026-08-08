@@ -3,44 +3,101 @@ title: control
 weight: 4
 ---
 
-# `control` — interactive drive
+# `control` — drive from the keyboard
 
 ```sh
-m0601 control --rpm 100     # full-screen keyboard control
+m0601 control --rpm 100     # full-screen dashboard; F/B drive at ±100
 ```
 
-A full-screen dashboard that runs the 50 Hz drive loop for you and takes live
-keyboard input. `control` is interactive; its scriptable counterpart is
+`control` is the interactive cockpit: a full-screen dashboard that runs the 50 Hz
+drive loop for you and takes live keystrokes. It's what you want when you're bringing
+up a motor by hand and reacting to what you see. Its non-interactive twin is
 [`drive`]({{< relref "drive" >}}).
+
+> [!CAUTION]
+> This starts a live control session with no confirmation. Presets reach 250 RPM on a
+> gearless wheel. Clear it first.
 
 ## Options
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--rpm` | `100` | Preset speed for the `F`/`B` keys (−330..330). |
+| `--rpm` | `100` | the speed the `F` and `B` keys drive at (−330..330) |
 
-## Keys
+## The keymap
 
-| Key | Action |
-|-----|--------|
-| `F` / `B` | forward / backward at the `--rpm` preset (switches to velocity mode) |
-| `1`–`5`   | 50–250 RPM (switches to velocity mode) |
-| `←` / `→` | nudge ±10 RPM (velocity mode only) |
-| `S`       | 0 RPM in velocity mode; hold the current angle in position mode; **zero torque — a coast, not a stop — in current mode** |
-| `K`       | electric brake (velocity mode only; ignored in current and position mode) |
-| `V`/`C`/`P` | switch mode: velocity / current / position |
-| `Q` / `Esc` / `Ctrl-C` | quit — forces velocity mode, zeroes, then brakes |
+```
+F/B    forward / backward at the --rpm preset
+1-5    50 / 100 / 150 / 200 / 250 RPM
+←/→    nudge ±10 RPM (velocity mode only)
+S      stop  (see the per-mode note below)
+K      electric brake (velocity mode only)
+V/C/P  switch to velocity / current / position mode
+Q/Esc  quit — forces velocity mode, zeroes, then brakes
+```
 
-## Behavior you'll actually notice
+`F`, `B`, and `1`–`5` don't just change the number they command — if you're not
+already in velocity mode, they request a real mode switch first (the dashboard shows
+`(switching to VELOCITY first)`). That matters: without it, pressing `F` in current
+mode would feed your RPM figure to the motor as a *torque*, while the screen claimed
+VELOCITY. The switch keeps the label honest.
 
-- `P` (position mode) is refused at 10 RPM or above (protocol constraint) and
-  when no telemetry has arrived — an unknown speed is not zero. Entering position
-  mode holds the wheel's *current* angle; it never jumps to 0°.
-- The dashboard shows the mode the **motor reports**; if it ever differs from the
-  requested one it turns red.
-- Temperature updates every ~200 ms (it only arrives in the periodic telemetry
-  query — drive replies don't carry it); shows `--` until the first.
-- Every exit path stops the wheel — quit keys, panics, SIGINT/SIGTERM/SIGHUP (a
-  dropped SSH session included). The stop is a fast step to zero plus brake, not a
-  gentle ramp. On SIGKILL or power loss the polling stops and the motor coasts,
-  per protocol.
+### `S` and `K` are mode-aware
+
+This is the part people trip over, and it's a direct consequence of "zero is not
+universally stop":
+
+- **In velocity mode**, `S` commands 0 RPM — an actual stop — and `K` engages the
+  electric brake.
+- **In current mode**, `S` commands zero torque, which is a *coast*, not a brake,
+  and it says so: `Zero current — coasting (K cannot brake in current mode)`. `K`
+  does nothing here.
+- **In position mode**, `S` does *not* send zero — that would mean "rotate to 0°,"
+  a potential half-turn. Instead it holds the wheel's current angle (`Holding 187.4
+  deg`). If no telemetry has arrived yet it can't know the angle, so it tells you to
+  press `V` to stop instead.
+
+`K` only ever brakes in velocity mode; in the other modes the brake byte is ignored
+by the motor, so the dashboard refuses rather than pretending.
+
+### Entering position mode is gated
+
+`P` is refused if the wheel is turning at 10 RPM or faster (a protocol constraint),
+and also if no telemetry has arrived at all — an unknown speed is not a zero speed,
+so `control` fails closed. When it does switch, it seeds the target with the wheel's
+*present* angle, so entering position mode never itself commands a move.
+
+## Trust the motor, not the intent
+
+The dashboard shows the mode the **motor reports**, and if that ever disagrees with
+what you asked for, the mode line turns **red** and shows both: `Mode: VELOCITY
+(motor: CURRENT)`. This is a deliberate design choice, not a debug aid. A dashboard
+that shows only what you *requested* is exactly how a "brake" keypress ends up
+freewheeling a wheel while the screen says BRAKING. Believe the red line.
+
+Similarly, the status word (STATIONARY, SPINNING, BRAKING) comes from the reported
+speed, and BRAKING only shows when the motor actually confirms it's in velocity mode
+braking. Until the first reply lands you'll see `Waiting for telemetry...`.
+
+Position and temperature are shown from the best data available: the hi-res 16-bit
+angle retained from drive replies (rather than flickering to the coarse 8-bit angle
+that arrives with the periodic temperature query), and temperature from that query,
+`--` until the first one lands.
+
+## Stopping is guaranteed on every exit you can survive
+
+`Q`, `Esc`, and `Ctrl-C` all quit by forcing velocity mode, zeroing, and braking —
+about 300 ms of frames. So do a panic and a `SIGTERM`/`SIGHUP` (a dropped SSH session
+counts). The one thing that can't brake is `SIGKILL` or losing power: nothing runs,
+so the motor coasts. That's the protocol fail-safe doing its job, but it means
+`kill -9` is not an emergency stop.
+
+Under the hood, the port is owned by a dedicated 50 Hz poll thread while the UI
+thread only ever edits shared state — see [Internals]({{< relref "../internals" >}})
+if you're curious how the guaranteed-stop-on-exit is wired.
+
+## See also
+
+- [`drive`]({{< relref "drive" >}}) — the same motion, scripted.
+- [Concepts → Stopping safely]({{< relref "../concepts/stopping-safely" >}}) — why
+  a stop starts by switching modes.

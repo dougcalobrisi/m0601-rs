@@ -3,47 +3,70 @@ title: Telemetry
 weight: 4
 ---
 
-# Telemetry — the two reply layouts
+# Telemetry: two layouts, one accumulator
 
-Every drive frame's reply carries telemetry too. Use `transact` to drive and read
-in one exchange, as a 50 Hz loop should:
+Every frame the motor replies to carries telemetry, including drive frames — so a
+50 Hz loop can read while it commands. `transact` is the method for that: send a
+frame, get the parsed reply back in one exchange.
 
 ```rust
 use m0601::protocol::frame_velocity;
 
 let frame = frame_velocity(motor.id(), 100, 1);
 if let Some(fb) = motor.transact(&frame, std::time::Duration::from_millis(6))? {
-    // Drive replies: hi-res position (~0.011°), NO temperature.
+    // A drive reply: fine 16-bit angle, but NO temperature.
     assert!(fb.temp_c.is_none());
     println!("{:+} RPM at {:.2}°", fb.speed_rpm, fb.position_deg);
 }
 ```
 
-The two layouts (see the [protocol reference]({{< relref "../protocol" >}}) for
-the exact bytes):
+## The two layouts
 
-| Reply to | `temp_c` | `position_deg` resolution |
+The catch is that the motor answers in **two different frame layouts**, and which one
+you get depends on the command that asked:
+
+| Reply to | `temp_c` | position resolution |
 |---|---|---|
-| `query()` / `0x74` | `Some(°C)` | ~1.4° (8-bit) |
-| drive frame / broadcast | `None` | ~0.011° (16-bit) |
+| `query()` / a `0x74` frame | `Some(°C)` | ~1.4°, from a single byte |
+| a drive frame / the broadcast | `None` | ~0.011°, from 16 bits |
 
-## Pattern for long-running loops
+So the query reply is where temperature lives, and the drive reply is where the
+precise angle lives — about 128× finer. Neither carries both. The driver decodes each
+reply according to the command that elicited it, so `Feedback` always means the right
+thing; you never have to guess which layout you're holding.
 
-`transact` the drive frame every cycle, and `query()` every ~10th cycle to
-refresh temperature — cache the last value. That's exactly what the CLI's
-`control` does.
+## The flicker problem, and `Telemetry`
 
-## `Feedback` vs `Telemetry`
+Now put those together in a real loop: you `transact` a drive frame every cycle for
+control, and slip in a `query()` every tenth cycle to refresh temperature. If you
+render straight off `Feedback`, temperature *flickers* — present on the tenth-cycle
+query reply, `None` on the nine drive replies in between. The angle flickers too,
+between coarse and fine.
 
-- **`Feedback`** is one parsed reply: `id`, `mode`, `current_a`, `speed_rpm`,
-  `temp_c` (`Option`), `position_deg`, `faults`, `crc_ok`, and the raw `Frame`.
-- **`Telemetry`** is an accumulator. Its `absorb(fb)` merges the two layouts so
-  temperature (from queries) and hi-res angle (from drive replies) both persist
-  across alternating replies — you always have the freshest of each.
+`Telemetry` fixes this. It's a small accumulator you feed each reply with `absorb`,
+and it retains the temperature and the hi-res angle across layouts:
+
+```rust
+use m0601::Telemetry;
+
+let mut tel = Telemetry::default();
+// in the loop:
+if let Some(fb) = motor.transact(&frame, wait)? {
+    tel.absorb(fb);
+}
+// tel.temp_c holds the last real temperature even on cycles whose reply had none;
+// tel.position_deg keeps the fine angle rather than downgrading to the 8-bit one.
+```
+
+This is exactly what the CLI's `control` and `drive` do to keep their dashboards from
+strobing. If you're building any loop that mixes drive frames and periodic queries,
+reach for `Telemetry` rather than reconciling the layouts yourself.
 
 ## Faults
 
-`Feedback::faults` is a `Faults` bitmask with named bits (`OVERCURRENT`,
-`PHASE_OVERCURRENT`, `STALL`, `OVERHEAT`, `SENSOR_ERR`) and a `Display` impl. See
-the [fault byte table]({{< relref "../protocol" >}}) for trip and release
-thresholds.
+`Feedback::faults` is a `Faults` newtype over the fault byte, with named bits and a
+`Display` that spells them out (`SensorErr | Overcurrent`). Any bit outside the
+documented set is shown as hex rather than dropped, so the motor can never report a
+fault you don't see. The trip and release thresholds are in the [protocol
+reference]({{< relref "../protocol" >}}); the short version is that each protection
+auto-resets about five seconds after the condition clears.

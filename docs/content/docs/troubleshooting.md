@@ -5,31 +5,41 @@ weight: 40
 
 # Troubleshooting
 
+Symptom on the left, the thing to check on the right. For *why* these behave the way
+they do, the [FAQ]({{< relref "faq" >}}) and [Concepts]({{< relref "concepts" >}})
+sections go deeper.
+
 | Symptom | Check |
 |---|---|
-| `scan` finds nothing | 18 V power on? A/B swapped (orange ↔ white)? Brown → GND? |
-| Permission denied on the port | `sudo usermod -aG dialout $USER`, re-login |
-| Motor found but wrong `--id` | `m0601 scan` shows the real ID |
-| Moves briefly, then stops | your loop is below ~50 Hz — the motor coasts between frames |
-| Intermittent garbage / dropouts | brown wire floating; missing 120 Ω termination on long cable |
-| `P` refused in `control` | wheel at 10 RPM or above, or no telemetry yet |
-| Motor ignores drive frames, fault bit set | a protection tripped (3 A bus / 4.6 A phase / 80 °C / stall) — auto-clears in ~5 s (overheat: on cooling to 75 °C) |
-| Two motors, chaos after `set-id` | the set-ID frame renamed both — reconnect one at a time and re-assign |
+| `scan` finds nothing | 18 V power on? A/B swapped (try orange ↔ white)? Brown wire → GND? A silent bus is almost always wiring. |
+| `Permission denied` on the port | `sudo usermod -aG dialout $USER`, then log out and back in. |
+| Found the motor, but `info` won't read it | Wrong `--id`, or the RX half of the wiring. `scan` shows the real address. |
+| Wheel spins briefly, then coasts | Your loop is under 50 Hz, or a query is replacing a drive frame on some cycles. Keep the drive cadence at 20 ms. |
+| Sent zero, but it moved or didn't brake | You weren't in velocity mode. Use `safe_stop` / the `S` key, which force velocity first. |
+| `control`'s `P` (or `drive position`) refused | Wheel at ≥10 RPM, or no telemetry yet (it fails closed on unknown speed). |
+| Faults the instant a drive starts | Ramp too steep — accel `1` spikes current past the 3 A protection. Soften with a larger accel byte. Auto-resets in ~5 s. |
+| Intermittent garbage / dropouts | Brown wire floating, or missing 120 Ω termination on a cable over ~1 m. |
+| Chaos after a `set-id` | The unaddressed frame renamed every motor that heard it. Reconnect one at a time and renumber. |
+| Short reply waits read nothing | FTDI 16 ms latency timer. See [Latency]({{< relref "concepts/latency" >}}) — the udev rule fixes it. |
 
-## Wiring checklist (no motors found?)
+## Still stuck? Confirm the chain end to end
 
-- 18 V power on?
-- Brown wire → GND?
-- A/B swapped? (try orange ↔ white)
-- Right `--id`? Run `m0601 scan`.
+Work outward from the physical layer, because that's where the failures cluster:
 
-## USB adapter latency
+1. **Power.** 18 V actually present at the motor. An unpowered motor is silent, not
+   erroring.
+2. **A/B polarity.** The single most common dead-bus cause. Swap orange ↔ white and
+   re-`scan` before anything else.
+3. **Brown → ground.** Not optional; a floating brown line gives you the flaky,
+   intermittent symptoms that look like software.
+4. **Address.** `m0601 scan --full` tells you the real ID definitively (the quick
+   scan can miss colliding or higher-ID motors).
+5. **Latency.** If replies clearly arrive but reads come up empty on short waits,
+   check `latency_timer` is `1`, not `16`.
 
-FTDI adapters can hold received bytes for up to 16 ms. The driver requests
-low-latency delivery automatically; if a `udev` rule is needed, see [Multi-motor
-bus → USB adapter latency]({{< relref "library/multi-motor" >}}).
+## The safety reminder, once more
 
-## A safety reminder
-
-The wheel is strong (2 N·m stall torque) and `control` stops it fast, not gently.
-Keep it off the ground or clear of fingers and cables before commanding motion.
+The wheel has real torque (2 N·m stall) and `control` stops it fast, not gently. Keep
+it off the ground or clear of fingers and cables before commanding motion — and
+remember that `kill -9` coasts rather than brakes, so it isn't an emergency stop. Cut
+power for that.

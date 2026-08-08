@@ -11,6 +11,11 @@ cross-checked byte-for-byte against this crate's test vectors. Where sources
 disagree, the disagreement is recorded (see [Known
 contradictions](#known-contradictions)) rather than silently resolved.
 
+This is the byte-level reference. For what these frames *mean* and why the driver
+handles them the way it does, see [Concepts]({{< relref "concepts" >}}) — especially
+[The bus]({{< relref "concepts/the-bus" >}}) and [Telemetry and echo]({{< relref
+"concepts/telemetry-and-echo" >}}).
+
 ## Identity
 
 The "DFRobot M0601" is a rebadged **Direct Drive Tech (DDT) M0601C-111**. DFRobot

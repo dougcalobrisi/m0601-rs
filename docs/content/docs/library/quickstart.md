@@ -3,7 +3,9 @@ title: Quickstart
 weight: 1
 ---
 
-# Query without moving anything
+# Read a motor without moving it
+
+The smallest useful program: open the port, ask the motor how it's doing, print it.
 
 ```rust
 use std::time::Duration;
@@ -16,21 +18,28 @@ fn main() -> m0601::Result<()> {
             "{:+} RPM, {:.1}°, {:?} °C, faults: {}",
             fb.speed_rpm, fb.position_deg, fb.temp_c, fb.faults
         ),
-        None => println!("no reply — check power, wiring, --id"),
+        None => println!("no reply — check 18 V power, wiring (brown → GND), A/B, --id"),
     }
     Ok(())
 }
 ```
 
 `query()` sends a `0x74` feedback frame and parses the reply. It's the only reply
-that carries winding temperature.
+that carries winding temperature, which is why `fb.temp_c` is populated here and
+comes back `None` from a reply to a drive frame ([Telemetry]({{< relref "telemetry"
+>}}) has the details).
 
-## `Ok(None)` is not an error
+## `Ok(None)` versus `Err`
 
-`Ok(None)` means the bus stayed silent — a wrong ID or an unpowered motor, **not
-a failure**. `Err` always means the port or OS failed. This distinction runs
-through the whole API; handle it explicitly rather than treating "no reply" as an
-exception.
+The two arms above aren't symmetric, and the distinction runs through the whole
+crate. `Ok(None)` means the bus stayed silent — a wrong address, an unpowered motor,
+a probe to an empty slot. That's an ordinary outcome on RS485, not a failure, and
+the driver never manufactures an error for it. `Err`, by contrast, always means the
+port or the OS failed: the device vanished, permission was denied, a write returned
+an I/O error.
+
+So the idiomatic shape is: `?`-propagate the real failures, and pattern-match the
+`Option` for presence.
 
 ```rust
 match M0601::open(port, 0x01, timeout) {
@@ -42,6 +51,14 @@ match M0601::open(port, 0x01, timeout) {
 }
 ```
 
-Telemetry is never rejected on its checksum (`Feedback::crc_ok` is informational;
-genuine replies normally have it `true`), and a reply from the wrong motor ID is
-dropped, surfacing as `Ok(None)`.
+`is_permission_denied()` is there precisely so you can give the `dialout` hint the
+CLI gives, instead of surfacing a bare OS error to your users.
+
+## A note on trust
+
+Telemetry is never rejected on its checksum. `Feedback::crc_ok` is informational —
+genuine replies normally have it `true` — but the driver hands you the reading either
+way and lets you decide. What it *does* silently drop is a reply carrying the wrong
+motor's ID, which surfaces as `Ok(None)` rather than as one motor reporting its
+neighbour's speed. That guard matters more than the CRC on a shared bus; see
+[Telemetry and echo]({{< relref "../concepts/telemetry-and-echo" >}}).

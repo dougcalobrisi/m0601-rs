@@ -3,26 +3,79 @@ title: monitor
 weight: 3
 ---
 
-# `monitor` — live readout, optional CSV
+# `monitor` — continuous telemetry
 
 ```sh
-m0601 monitor --hz 5                 # one-line live dashboard, Ctrl+C stops
-m0601 monitor --hz 20 --csv log.csv  # also log rows to log.csv (overwrites it)
+m0601 monitor --hz 5                 # live one-line dashboard, Ctrl+C to stop
+m0601 monitor --hz 20 --csv log.csv  # ...and log every reading to a CSV (see the truncation note)
 ```
 
-Monitoring only *queries* — it never drives the motor, so the wheel stays put (or
-keeps doing whatever another controller tells it). A transient bus error is
-reported and polling continues.
+`monitor` is `info` on repeat: it polls at a rate you choose and keeps a single line
+updated in place, optionally logging every reading to CSV. It only ever *queries* —
+it never sends a drive frame — so the wheel keeps doing whatever it was doing (idle,
+or driven by something else on the bus). Use it to watch temperature climb under
+load, capture a run for later analysis, or just confirm a controller elsewhere is
+doing what you expect.
 
 ## Options
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--hz` | `5.0` | Poll rate in Hz (0.001–1000). |
-| `--csv <FILE>` | — | Also log readings to a CSV file (overwrites it). |
+| `--hz` | `5.0` | poll rate, validated to `0.001..=1000` Hz |
+| `--csv <FILE>` | — | also log each reading to a CSV file |
 
-## CSV format
+The rate is held by measuring how long each poll took and sleeping the remainder, so
+`--hz 20` really means one reading every 50 ms, not "as fast as possible."
 
-Columns: `timestamp,motor_id,mode,speed_rpm,current_a,temp_c,position_deg,error_code,error_str,raw_hex`.
+## Reading the line
 
-Rows are flushed as written, so a killed session keeps everything logged so far.
+```
+[14:32:07] #142 | Velocity | Speed +100 | Cur +0.312 | Pos 187.4 | Temp 41C | OK
+```
+
+Timestamp, a running count, the reported mode, and the decoded telemetry. `OK`
+becomes `FAULT(names)` if a protection bit is set.
+
+## It's built to survive a rough bus
+
+RS485 drops the occasional frame, and a long-running monitor shouldn't flap or die
+because of it. Two behaviors handle that:
+
+- **A single missed poll is ignored.** The last good reading stays on screen, and
+  `monitor` only warns after **five consecutive** misses (about a second at 5 Hz)
+  with `[!] no response — check motor power/wiring`. That keeps a healthy-but-lossy
+  bus from strobing warnings at you.
+- **A transient bus error doesn't kill it.** A USB hiccup prints `[!] bus error: ...
+  — still polling` and the loop continues, same policy as the control loop.
+
+## The CSV format
+
+With `--csv`, every reading is appended as a row under this header:
+
+```
+timestamp,motor_id,mode,speed_rpm,current_a,temp_c,position_deg,error_code,error_str,raw_hex
+```
+
+Two things to rely on:
+
+- **The schema is a stable contract.** Downstream logs and scripts depend on these
+  columns and their order, so they don't change casually.
+- **Rows are flushed as they're written.** If the session is killed mid-run,
+  everything logged up to that point is already on disk — you don't lose the run to
+  a buffer.
+
+One sharp edge: opening the file **truncates** it. `monitor` warns before it does
+(`[!] log.csv already exists — overwriting it.`), but a re-run with the same
+filename replaces the previous log rather than appending. Name your files per run if
+you want to keep them.
+
+## Stopping
+
+`Ctrl-C`, `SIGTERM`, or `SIGHUP` all stop the loop cleanly, flush and close the CSV,
+and print `Saved N rows to log.csv`. Since `monitor` never drives the motor, there's
+nothing to brake — stopping it just stops the watching.
+
+## See also
+
+- [`info`]({{< relref "info" >}}) for a one-shot version.
+- [`drive`]({{< relref "drive" >}}), which shows a live readout *while* driving.
