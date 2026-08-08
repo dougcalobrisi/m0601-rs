@@ -153,7 +153,7 @@ pub mod protocol;
 pub mod transport;
 pub mod types;
 
-pub use bus::{Bus, M0601};
+pub use bus::{Bus, M0601, ScanReport};
 pub use error::{Error, Result};
 pub use protocol::ReplyKind;
 pub use transport::{MockTransport, SerialTransport, Transport};

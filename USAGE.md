@@ -76,8 +76,11 @@ m0601 scan --full     # poll every ID 0x01..0xFE, ~40 s
 ```
 
 The fast scan broadcasts one query; motors answer without arbitration, so
-**two motors can collide and look like one or none**. When you need
-certainty (e.g. before `set-id`), use `--full`.
+**two motors can collide and look like one or none**. When the collision
+garbles the reply so badly that no ID can be read at all, `scan` says so
+and automatically falls back to the full poll; if it read some IDs but
+also garbage, it lists what it found and suggests `--full`. When you need
+certainty (e.g. before `set-id`), use `--full` directly.
 
 ### `info` — configuration + one-shot readout
 

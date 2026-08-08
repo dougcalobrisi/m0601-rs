@@ -80,6 +80,27 @@ fn frames<'a>(tx: &[u8], rx: &'a [u8]) -> Option<std::slice::ChunksExact<'a, u8>
     Some(rx.chunks_exact(protocol::FRAME_LEN))
 }
 
+/// What a [`Bus::scan`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanReport {
+    /// Motor IDs that answered, ascending.
+    pub ids: Vec<u8>,
+    /// The broadcast stage read bytes it could not attribute to any motor —
+    /// a misaligned buffer, or an aligned frame whose ID byte is out of
+    /// range.
+    ///
+    /// On a multi-drop bus this is the signature of several motors
+    /// answering the unarbitrated broadcast at once: their replies collide
+    /// into bytes belonging to neither. (A partly-captured TX echo looks
+    /// the same; either way the bus is *not* silent.) So `ids` being empty
+    /// alongside `garbled: true` does **not** mean no motors are present —
+    /// it is a strong hint to re-scan with `full: true`, which probes each
+    /// ID in isolation. (A full scan can still collide where two motors
+    /// share one ID — the aftermath of a misused
+    /// [`set_id`](Bus::set_id) — since both answer the same probe.)
+    pub garbled: bool,
+}
+
 /// A shared RS485 bus: owns the transport that one or more [`M0601`] motors
 /// talk through.
 ///
@@ -158,13 +179,18 @@ impl<T: Transport> Bus<T> {
     /// pass `full: true` when that distinction matters (as
     /// [`set_id`](Self::set_id) requires it to).
     ///
+    /// When the collision garbles the buffer beyond parsing, stage 1 cannot
+    /// name any ID at all — a four-motor bus can scan as *empty*. That case
+    /// is reported via [`ScanReport::garbled`] so callers can escalate to a
+    /// full scan instead of concluding the bus is dead.
+    ///
     /// # Blocking
     ///
     /// Every probe holds the bus lock across its reply wait, so a `full`
     /// scan monopolises the bus for ~254 × `timeout`. Do not run one
     /// concurrently with a drive loop on the same bus: the loop's frames
     /// will not get out, and its motor will coast.
-    pub fn scan(&self, full: bool, mut progress: impl FnMut(u8)) -> Result<Vec<u8>> {
+    pub fn scan(&self, full: bool, mut progress: impl FnMut(u8)) -> Result<ScanReport> {
         let mut found = std::collections::BTreeSet::new();
 
         // Stage 1 — broadcast. Replies land back-to-back when several motors
@@ -177,12 +203,26 @@ impl<T: Transport> Bus<T> {
         // with the *query's own* destination byte 0xC8 — which is in the
         // valid ID range. The scan would report a motor at 0xC8 that does
         // not exist and miss the one that does.
+        //
+        // Either rejection leaves bytes unaccounted for; `garbled` records
+        // that, because "the bus answered with garbage" (motors colliding)
+        // and "the bus is silent" (no motors) demand opposite responses
+        // from the caller.
         let query = frame_id_query();
         let resp = lock(&self.transport).send_recv(&query, BROADCAST_WAIT)?;
-        for chunk in frames(&query, &resp).into_iter().flatten() {
-            if (0x01..=0xFE).contains(&chunk[0]) {
-                found.insert(chunk[0]);
+        let payload = resp.strip_prefix(query.as_slice()).unwrap_or(&resp);
+        let mut garbled = false;
+        match frames(&query, &resp) {
+            Some(chunks) => {
+                for chunk in chunks {
+                    if (0x01..=0xFE).contains(&chunk[0]) {
+                        found.insert(chunk[0]);
+                    } else {
+                        garbled = true;
+                    }
+                }
             }
+            None => garbled = !payload.is_empty(),
         }
 
         // Stage 2 — exhaustive poll.
@@ -205,7 +245,10 @@ impl<T: Transport> Bus<T> {
             }
         }
 
-        Ok(found.into_iter().collect())
+        Ok(ScanReport {
+            ids: found.into_iter().collect(),
+            garbled,
+        })
     }
 
     /// Change the persistent RS485 ID of the (single!) motor on the bus.

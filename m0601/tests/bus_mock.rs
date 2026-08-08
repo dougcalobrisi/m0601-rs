@@ -174,7 +174,9 @@ fn set_mode_sends_exactly_five_frames() {
 fn scan_broadcast_finds_id() {
     // Bus answers the broadcast with a frame starting with the motor's ID.
     let bus = Bus::with_transport(MockTransport::with_replies([telemetry(0x2A)]), TIMEOUT);
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, vec![0x2A]);
+    assert!(!report.garbled);
 }
 
 #[test]
@@ -189,7 +191,10 @@ fn scan_rejects_own_tx_echo() {
         },
         TIMEOUT,
     );
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), Vec::<u8>::new());
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, Vec::<u8>::new());
+    // A fully-recognised echo is accounted for — nothing garbled about it.
+    assert!(!report.garbled);
 }
 
 #[test]
@@ -200,7 +205,25 @@ fn scan_ignores_stray_bytes_that_are_not_a_whole_frame() {
         MockTransport::with_replies([vec![0x2A, 0x2B, 0x2C]]),
         TIMEOUT,
     );
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), Vec::<u8>::new());
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, Vec::<u8>::new());
+    // ...but those bytes came from somewhere, and the caller must hear it.
+    assert!(report.garbled);
+}
+
+#[test]
+fn scan_flags_multi_motor_collision_as_garbled_not_silent() {
+    // Observed on a real four-motor bus: the unarbitrated broadcast replies
+    // collide into a 15-byte burst that is no whole number of frames. The
+    // old scan reported "no motors" for this; garbled is what lets a caller
+    // tell a colliding bus from a dead one and escalate to a full scan.
+    let collided = vec![
+        0x03, 0x00, 0x00, 0x14, 0x00, 0x05, 0x00, 0x00, 0x0F, 0x13, 0x00, 0x09, 0xC7, 0x00, 0x64,
+    ];
+    let bus = Bus::with_transport(MockTransport::with_replies([collided]), TIMEOUT);
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, Vec::<u8>::new());
+    assert!(report.garbled);
 }
 
 #[test]
@@ -208,18 +231,23 @@ fn scan_finds_several_motors_answering_back_to_back() {
     let mut reply = telemetry(0x2A);
     reply.extend(telemetry(0x05));
     let bus = Bus::with_transport(MockTransport::with_replies([reply]), TIMEOUT);
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x05, 0x2A]);
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, vec![0x05, 0x2A]);
+    assert!(!report.garbled);
 }
 
 #[test]
 fn scan_ignores_collision_garbage_but_keeps_clean_frames() {
     // Two motors answering a broadcast at once collide into bytes belonging
     // to neither. A 10-byte chunk whose ID byte is out of range must not
-    // register; a clean frame after it still does.
+    // register; a clean frame after it still does — and the junk chunk is
+    // reported as garbling, since it hints at further motors colliding.
     let mut resp = vec![0x00, 0xFF, 0x13, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     resp.extend(telemetry(0x2A));
     let bus = Bus::with_transport(MockTransport::with_replies([resp]), TIMEOUT);
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, vec![0x2A]);
+    assert!(report.garbled);
 }
 
 #[test]
@@ -238,11 +266,15 @@ fn scan_partial_echo_reports_nothing_rather_than_a_phantom() {
             },
             TIMEOUT,
         );
+        let report = bus.scan(false, |_| {}).unwrap();
         assert_eq!(
-            bus.scan(false, |_| {}).unwrap(),
+            report.ids,
             Vec::<u8>::new(),
             "echo truncated to {keep} produced a phantom ID"
         );
+        // The unstrippable partial echo plus the reply is unattributable
+        // data — flagged, so the real motor at 0x2A is not written off.
+        assert!(report.garbled, "echo truncated to {keep} not flagged");
     }
 }
 
@@ -263,7 +295,7 @@ fn full_scan_partial_echo_does_not_answer_every_probe() {
         },
         TIMEOUT,
     );
-    assert_eq!(bus.scan(true, |_| {}).unwrap(), Vec::<u8>::new());
+    assert_eq!(bus.scan(true, |_| {}).unwrap().ids, Vec::<u8>::new());
 }
 
 #[test]
@@ -275,7 +307,9 @@ fn scan_echo_plus_reply_finds_real_id() {
         },
         TIMEOUT,
     );
-    assert_eq!(bus.scan(false, |_| {}).unwrap(), vec![0x2A]);
+    let report = bus.scan(false, |_| {}).unwrap();
+    assert_eq!(report.ids, vec![0x2A]);
+    assert!(!report.garbled);
 }
 
 #[test]
@@ -291,7 +325,7 @@ fn full_scan_probes_all_ids_and_matches_by_reply_id() {
     }
     let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
     let mut progress = Vec::new();
-    let found = bus.scan(true, |id| progress.push(id)).unwrap();
+    let found = bus.scan(true, |id| progress.push(id)).unwrap().ids;
     assert_eq!(found, vec![0x10]);
     // All 254 IDs probed, in order, each with its own feedback frame.
     assert_eq!(progress, (0x01..=0xFEu8).collect::<Vec<_>>());
@@ -314,7 +348,7 @@ fn full_scan_ignores_reply_with_wrong_id() {
         });
     }
     let bus = Bus::with_transport(MockTransport::with_replies(replies), TIMEOUT);
-    assert_eq!(bus.scan(true, |_| {}).unwrap(), Vec::<u8>::new());
+    assert_eq!(bus.scan(true, |_| {}).unwrap().ids, Vec::<u8>::new());
 }
 
 #[test]
