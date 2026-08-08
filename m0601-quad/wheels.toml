@@ -10,21 +10,22 @@ port = "/dev/ttyUSB1"
 cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
                     # drive interval drops below the 50 Hz floor and it
                     # coasts a little every cycle. 18 leaves 2 ms of margin.
-                    # NB the bus itself needs ~17.4 ms of this (4 drives +
-                    # poll, each with the enforced gap), so `check` warns
-                    # that cycle slack is thin. The 20 ms floor caps the
+                    # NB a poll cycle needs ~16.3 ms of this (4 drives + 1
+                    # poll, each with the enforced gap, at reply_wait 2.0),
+                    # so `check` warns that cycle slack is thin. The 20 ms
+                    # floor caps the
                     # total budget: more cycle slack costs coast margin,
                     # and vice versa — only a measured, smaller min_gap
                     # buys both.
 min_gap_ms = 2.0    # -> Bus::with_min_gap; idle AFTER each frame, so
                     # frame-to-frame spacing is ~2.9 ms (0.9 ms frame + gap).
                     # A floor, not a schedule; tune from `check --probe`.
-reply_wait_ms = 2.0 # per-poll reply window. Short on purpose: the bus is
-                    # locked (a fixed sleep) for its whole duration every
-                    # cycle. Measured turnaround on this rig is ~1.0-1.5 ms
+reply_wait_ms = 2.0 # per-poll reply window. Short on purpose: on a poll
+                    # cycle the bus is locked (a fixed sleep) for its whole
+                    # duration. Measured turnaround on this rig is ~1.0-1.5 ms
                     # (`check --probe` still hears all four at 1.5, loses
                     # three at 1.0), so 2.0 keeps margin while shaving 1 ms
-                    # of dead time off every cycle. Re-measure on new motors.
+                    # off each poll cycle. Re-measure on new motors.
 
 [limits]
 max_rpm = 120          # 100% throttle commands exactly this (wheel max 330)
