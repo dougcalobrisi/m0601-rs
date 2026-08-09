@@ -797,8 +797,16 @@ impl<T: Transport> M0601<T> {
     /// being written off because a neighbour happened to answer first.
     fn parse_reply(&self, tx: &[u8], rx: &[u8]) -> Option<Feedback> {
         let kind = ReplyKind::from_tx(tx)?;
-        let fb = frames(tx, rx)?
-            .find_map(|frame| parse_feedback(frame, kind).filter(|fb| fb.id == self.id))?;
+        // Pick the frame addressed to this handle. In strict-CRC mode a frame
+        // whose CRC does not check is not a candidate at all — so a stale,
+        // corrupt frame sitting ahead of the real reply in the same read is
+        // skipped rather than sinking the whole reply, and a later valid frame
+        // for this id can still be selected. Advisory mode keeps taking the
+        // first id-matching frame regardless of CRC.
+        let fb = frames(tx, rx)?.find_map(|frame| {
+            parse_feedback(frame, kind)
+                .filter(|fb| fb.id == self.id && (!self.strict_crc || fb.crc_ok))
+        })?;
         Some(self.adjust(fb))
     }
 
@@ -831,12 +839,11 @@ impl<T: Transport> M0601<T> {
     /// than being returned with `crc_ok == false`.
     pub fn transact(&mut self, frame: &Frame, wait: Duration) -> Result<Option<Feedback>> {
         let rx = with_gap(&self.port, |t| t.send_recv(frame, wait))?;
-        // Strict handles reject a CRC-failing frame at the point it is built,
-        // so bad telemetry never leaves the driver; the default stays
-        // advisory and returns it with `crc_ok == false`.
-        Ok(self
-            .parse_reply(frame, &rx)
-            .filter(|fb| !self.strict_crc || fb.crc_ok))
+        // Strict handles reject CRC-failing frames during selection (see
+        // `parse_reply`), so bad telemetry never leaves the driver and a valid
+        // frame later in the same read is still picked up; the default stays
+        // advisory and returns the first id-matching frame with `crc_ok` set.
+        Ok(self.parse_reply(frame, &rx))
     }
 
     /// Query telemetry with a feedback (`0x74`) frame, waiting the configured

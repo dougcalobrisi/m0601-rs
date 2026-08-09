@@ -971,6 +971,39 @@ fn strict_crc_applies_to_transact_and_query_with_too() {
 }
 
 #[test]
+fn strict_crc_skips_a_stale_corrupt_frame_and_selects_a_later_valid_one() {
+    // One read carrying a CRC-bad frame for this id AHEAD of a valid one for
+    // the same id — multi-frame reads are supported (a stale reply still in
+    // the adapter buffer, then the fresh answer). Strict mode must skip the
+    // corrupt candidate during selection and still return the good reply,
+    // not discard both because the bad one came first.
+    let mut buf = telemetry_bad_crc(0x01);
+    buf.extend_from_slice(&telemetry_good_crc(0x01));
+    let mut m = motor(MockTransport::with_replies([buf])).with_strict_crc(true);
+    let fb = m
+        .query()
+        .unwrap()
+        .expect("the later valid frame is selected");
+    assert!(fb.crc_ok);
+    assert_eq!(fb.speed_rpm, 100);
+}
+
+#[test]
+fn advisory_mode_still_takes_the_first_id_frame_even_if_corrupt() {
+    // Behavior unchanged without strict: the first id-matching frame wins,
+    // returned with its (failing) CRC verdict, even if a later frame would
+    // also parse.
+    let mut buf = telemetry_bad_crc(0x01);
+    buf.extend_from_slice(&telemetry_good_crc(0x01));
+    let mut m = motor(MockTransport::with_replies([buf]));
+    let fb = m
+        .query()
+        .unwrap()
+        .expect("advisory returns the first frame");
+    assert!(!fb.crc_ok, "the first frame was the corrupt one");
+}
+
+#[test]
 fn bus_with_strict_crc_propagates_to_minted_motors() {
     let bus = Bus::with_transport(
         MockTransport::with_replies([telemetry_bad_crc(0x01)]),
