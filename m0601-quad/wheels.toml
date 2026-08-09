@@ -63,7 +63,7 @@ id = 0x04
 name = "front pass"
 side = "pass"
 end = "front"
-invert = false
+invert = true
 mirrored = false
 
 [[wheel]]
@@ -79,5 +79,5 @@ id = 0x02
 name = "rear pass"
 side = "pass"
 end = "rear"
-invert = false
+invert = true
 mirrored = false
