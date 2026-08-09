@@ -972,8 +972,11 @@ fn strict_crc_applies_to_transact_and_query_with_too() {
 
 #[test]
 fn bus_with_strict_crc_propagates_to_minted_motors() {
-    let bus = Bus::with_transport(MockTransport::with_replies([telemetry_bad_crc(0x01)]), TIMEOUT)
-        .with_strict_crc(true);
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([telemetry_bad_crc(0x01)]),
+        TIMEOUT,
+    )
+    .with_strict_crc(true);
     assert!(bus.strict_crc());
     let mut m = bus.motor(0x01).unwrap();
     assert!(m.strict_crc(), "the bus-wide flag reached the handle");
@@ -983,7 +986,10 @@ fn bus_with_strict_crc_propagates_to_minted_motors() {
 #[test]
 fn motor_with_strict_crc_overrides_the_bus_default() {
     // Bus is advisory, but one handle opts into strict on its own.
-    let bus = Bus::with_transport(MockTransport::with_replies([telemetry_bad_crc(0x01)]), TIMEOUT);
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([telemetry_bad_crc(0x01)]),
+        TIMEOUT,
+    );
     assert!(!bus.strict_crc());
     let mut m = bus.motor(0x01).unwrap().with_strict_crc(true);
     assert!(m.query().unwrap().is_none());

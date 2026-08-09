@@ -291,7 +291,7 @@ impl Telemetry {
 ///
 /// Feed each periodic sample to [`update`](Self::update) (degrees) or
 /// [`update_raw`](Self::update_raw) (a 16-bit reading, converted with the
-/// same scale as [`raw_to_deg`](crate::protocol::raw_to_deg)) and read back
+/// same scale as [`raw_to_deg`]) and read back
 /// the running total. The unwrap is done on the **shortest arc**: each new
 /// sample is compared against the previous one and the difference is folded
 /// into `(-180°, +180°]` before being added to the accumulated angle, so a
@@ -374,7 +374,7 @@ impl PositionAccumulator {
     /// [`ReplyKind::Drive`] layout) and return the updated continuous angle.
     ///
     /// Convenience over [`update`](Self::update) using the same scale as
-    /// [`raw_to_deg`](crate::protocol::raw_to_deg).
+    /// [`raw_to_deg`].
     pub fn update_raw(&mut self, raw: u16) -> f32 {
         self.update(raw_to_deg(raw))
     }
