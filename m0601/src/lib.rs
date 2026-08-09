@@ -183,4 +183,4 @@ pub use bus::{Bus, DEFAULT_MIN_GAP, M0601, ScanReport};
 pub use error::{Error, Result};
 pub use protocol::ReplyKind;
 pub use transport::{MockTransport, SerialTransport, Transport};
-pub use types::{Faults, Feedback, Mode, Telemetry};
+pub use types::{Faults, Feedback, Mode, PositionAccumulator, Telemetry};

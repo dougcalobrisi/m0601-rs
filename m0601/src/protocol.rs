@@ -480,3 +480,27 @@ pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
         raw,
     })
 }
+
+/// Like [`parse_feedback`], but **rejects** a frame whose byte 9 does not
+/// match its CRC-8/MAXIM: a decoded [`Feedback`] with `crc_ok == false`
+/// becomes `None`.
+///
+/// This is the pure-function form of the bus's opt-in strict-CRC mode
+/// ([`Bus::with_strict_crc`](crate::Bus::with_strict_crc) /
+/// [`M0601::with_strict_crc`](crate::M0601::with_strict_crc)). The default
+/// [`parse_feedback`] stays advisory — it returns the telemetry and leaves
+/// the CRC verdict in [`Feedback::crc_ok`] for the caller to weigh — because
+/// genuine replies from some firmware revisions have been seen to disagree on
+/// the checksum. Reach for the strict form only where a corrupt frame is
+/// worse than a dropped one, e.g. before feeding an odometry integrator.
+///
+/// ```
+/// use m0601::protocol::{parse_feedback, parse_feedback_strict, ReplyKind};
+/// // Byte 9 is deliberately wrong (a good CRC here is 0x00).
+/// let bad = [0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00, 0xFF];
+/// assert!(parse_feedback(&bad, ReplyKind::Query).is_some_and(|fb| !fb.crc_ok));
+/// assert!(parse_feedback_strict(&bad, ReplyKind::Query).is_none());
+/// ```
+pub fn parse_feedback_strict(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
+    parse_feedback(data, kind).filter(|fb| fb.crc_ok)
+}
