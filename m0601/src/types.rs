@@ -362,8 +362,7 @@ impl PositionAccumulator {
                 // Fold the raw difference into (-180, 180]: `rem_euclid`
                 // lands it in [0, 360), then anything past 180 is the same
                 // motion taken the short way round the other direction.
-                let mut delta =
-                    (f64::from(sample_deg) - f64::from(prev)).rem_euclid(360.0);
+                let mut delta = (f64::from(sample_deg) - f64::from(prev)).rem_euclid(360.0);
                 if delta > 180.0 {
                     delta -= 360.0;
                 }
