@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use m0601::protocol::{
-    ReplyKind, frame_brake, frame_feedback, frame_id_query, frame_mode, frame_velocity,
+    ReplyKind, frame_brake, frame_feedback, frame_from_bytes, frame_id_query, frame_mode,
+    frame_velocity,
 };
 use m0601::{Bus, Error, M0601, MockTransport, Mode};
 
@@ -874,6 +875,157 @@ fn set_mode_all_validates_every_id_before_sending() {
         Err(Error::InvalidId(0xFF))
     ));
     assert!(bus.into_transport().expect("no motors").sent.is_empty());
+}
+
+// ── Realtime-safe query ──
+
+#[test]
+fn query_with_issues_the_feedback_frame_and_decodes_a_query_reply() {
+    // query_with sends the same 0x74 feedback frame as query() but waits only
+    // the caller's `wait`; the reply decodes in the Query layout (temperature
+    // present, coarse 8-bit position).
+    let mut m = motor(MockTransport::with_replies([telemetry(0x01)]));
+    let fb = m
+        .query_with(Duration::from_millis(4))
+        .unwrap()
+        .expect("telemetry parsed");
+    assert_eq!(fb.kind, ReplyKind::Query);
+    assert_eq!(fb.speed_rpm, 100);
+    assert_eq!(fb.temp_c, Some(40));
+    // Exactly one frame went out, and it is the feedback query.
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent, vec![frame_feedback(0x01).to_vec()]);
+}
+
+#[test]
+fn query_with_silence_is_ok_none() {
+    let mut m = motor(MockTransport::default());
+    assert!(m.query_with(Duration::from_millis(4)).unwrap().is_none());
+}
+
+// ── Strict-CRC reject option ──
+
+/// A telemetry reply from `id` carrying a valid CRC-8/MAXIM in byte 9
+/// (`telemetry()` above deliberately leaves byte 9 zero, which does *not*
+/// check out — the crate's own doctests rely on that).
+fn telemetry_good_crc(id: u8) -> Vec<u8> {
+    frame_from_bytes(&[id, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x00, 0x00])
+        .expect("9 bytes -> crc appended")
+        .to_vec()
+}
+
+/// The same reply with byte 9 corrupted so the CRC no longer matches.
+fn telemetry_bad_crc(id: u8) -> Vec<u8> {
+    let mut f = telemetry_good_crc(id);
+    f[9] ^= 0xFF; // guaranteed to differ from the real CRC
+    f
+}
+
+#[test]
+fn strict_crc_is_off_by_default_and_returns_corrupt_frames_advisory() {
+    let mut m = motor(MockTransport::with_replies([telemetry_bad_crc(0x01)]));
+    assert!(!m.strict_crc(), "advisory is the default");
+    let fb = m.query().unwrap().expect("default mode returns it anyway");
+    assert!(!fb.crc_ok, "the CRC verdict is advisory, but reported");
+    assert_eq!(fb.speed_rpm, 100);
+}
+
+#[test]
+fn strict_crc_drops_a_corrupt_frame_to_none() {
+    let mut m = motor(MockTransport::with_replies([telemetry_bad_crc(0x01)])).with_strict_crc(true);
+    assert!(m.strict_crc());
+    assert!(
+        m.query().unwrap().is_none(),
+        "a CRC-failing frame must not reach a strict handle"
+    );
+}
+
+#[test]
+fn strict_crc_passes_a_good_frame_through() {
+    // A valid CRC is returned in both modes.
+    let mut default = motor(MockTransport::with_replies([telemetry_good_crc(0x01)]));
+    assert!(default.query().unwrap().expect("returned").crc_ok);
+
+    let mut strict =
+        motor(MockTransport::with_replies([telemetry_good_crc(0x01)])).with_strict_crc(true);
+    let fb = strict.query().unwrap().expect("good CRC passes strict too");
+    assert!(fb.crc_ok);
+    assert_eq!(fb.speed_rpm, 100);
+}
+
+#[test]
+fn strict_crc_applies_to_transact_and_query_with_too() {
+    // Not just query(): the drive-frame path and the short-wait query honour
+    // it as well, since all three route through transact().
+    let mut m = motor(MockTransport::with_replies([
+        telemetry_bad_crc(0x01),
+        telemetry_bad_crc(0x01),
+    ]))
+    .with_strict_crc(true);
+    assert!(
+        m.transact(&frame_velocity(0x01, 100, 1), Duration::ZERO)
+            .unwrap()
+            .is_none()
+    );
+    assert!(m.query_with(Duration::ZERO).unwrap().is_none());
+}
+
+#[test]
+fn strict_crc_skips_a_stale_corrupt_frame_and_selects_a_later_valid_one() {
+    // One read carrying a CRC-bad frame for this id AHEAD of a valid one for
+    // the same id — multi-frame reads are supported (a stale reply still in
+    // the adapter buffer, then the fresh answer). Strict mode must skip the
+    // corrupt candidate during selection and still return the good reply,
+    // not discard both because the bad one came first.
+    let mut buf = telemetry_bad_crc(0x01);
+    buf.extend_from_slice(&telemetry_good_crc(0x01));
+    let mut m = motor(MockTransport::with_replies([buf])).with_strict_crc(true);
+    let fb = m
+        .query()
+        .unwrap()
+        .expect("the later valid frame is selected");
+    assert!(fb.crc_ok);
+    assert_eq!(fb.speed_rpm, 100);
+}
+
+#[test]
+fn advisory_mode_still_takes_the_first_id_frame_even_if_corrupt() {
+    // Behavior unchanged without strict: the first id-matching frame wins,
+    // returned with its (failing) CRC verdict, even if a later frame would
+    // also parse.
+    let mut buf = telemetry_bad_crc(0x01);
+    buf.extend_from_slice(&telemetry_good_crc(0x01));
+    let mut m = motor(MockTransport::with_replies([buf]));
+    let fb = m
+        .query()
+        .unwrap()
+        .expect("advisory returns the first frame");
+    assert!(!fb.crc_ok, "the first frame was the corrupt one");
+}
+
+#[test]
+fn bus_with_strict_crc_propagates_to_minted_motors() {
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([telemetry_bad_crc(0x01)]),
+        TIMEOUT,
+    )
+    .with_strict_crc(true);
+    assert!(bus.strict_crc());
+    let mut m = bus.motor(0x01).unwrap();
+    assert!(m.strict_crc(), "the bus-wide flag reached the handle");
+    assert!(m.query().unwrap().is_none());
+}
+
+#[test]
+fn motor_with_strict_crc_overrides_the_bus_default() {
+    // Bus is advisory, but one handle opts into strict on its own.
+    let bus = Bus::with_transport(
+        MockTransport::with_replies([telemetry_bad_crc(0x01)]),
+        TIMEOUT,
+    );
+    assert!(!bus.strict_crc());
+    let mut m = bus.motor(0x01).unwrap().with_strict_crc(true);
+    assert!(m.query().unwrap().is_none());
 }
 
 #[test]

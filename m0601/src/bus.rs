@@ -279,6 +279,9 @@ pub struct ScanReport {
 pub struct Bus<T: Transport = SerialTransport> {
     port: Arc<Mutex<Port<T>>>,
     timeout: Duration,
+    /// Propagated to every [`M0601`] minted from this bus — see
+    /// [`with_strict_crc`](Self::with_strict_crc).
+    strict_crc: bool,
 }
 
 // Manual impl: buses are cheap to clone regardless of whether T is Clone —
@@ -290,6 +293,7 @@ impl<T: Transport> Clone for Bus<T> {
         Self {
             port: Arc::clone(&self.port),
             timeout: self.timeout,
+            strict_crc: self.strict_crc,
         }
     }
 }
@@ -314,6 +318,7 @@ impl<T: Transport> std::fmt::Debug for Bus<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Bus")
             .field("timeout", &self.timeout)
+            .field("strict_crc", &self.strict_crc)
             .field("min_gap", &peek_min_gap(&self.port))
             .finish_non_exhaustive()
     }
@@ -342,6 +347,7 @@ impl<T: Transport> Bus<T> {
                 min_gap: DEFAULT_MIN_GAP,
             })),
             timeout,
+            strict_crc: false,
         }
     }
 
@@ -384,6 +390,36 @@ impl<T: Transport> Bus<T> {
         lock(&self.port).min_gap
     }
 
+    /// Opt into **strict CRC** for every motor minted from this bus: a
+    /// telemetry frame whose byte 9 fails the CRC-8/MAXIM check is dropped to
+    /// `Ok(None)` instead of being returned with
+    /// [`Feedback::crc_ok`](crate::Feedback::crc_ok)` == false`.
+    ///
+    /// The default is **advisory** (`false`), matching the rest of the crate:
+    /// telemetry is returned regardless and the CRC verdict is left in
+    /// `crc_ok` for the caller to weigh, because genuine replies from some
+    /// firmware revisions have been seen to disagree on the checksum (see
+    /// `PROTOCOL.md`). Turn this on where a corrupt frame is worse than a
+    /// dropped one — above all before an odometry integrator, which a single
+    /// bad position sample can throw off for good.
+    ///
+    /// Unlike [`with_min_gap`](Self::with_min_gap), this flag lives on the
+    /// handle, not the shared port: it is copied into each [`M0601`] at
+    /// [`motor`](Self::motor) time (exactly as [`timeout`](Self::timeout) is),
+    /// so set it before minting the motors you want it to cover. A motor's own
+    /// [`M0601::with_strict_crc`] can still override it per handle.
+    #[must_use]
+    pub fn with_strict_crc(mut self, strict: bool) -> Self {
+        self.strict_crc = strict;
+        self
+    }
+
+    /// Whether motors minted from this bus reject CRC-failing frames
+    /// ([`with_strict_crc`](Self::with_strict_crc)).
+    pub fn strict_crc(&self) -> bool {
+        self.strict_crc
+    }
+
     /// A driver handle for the motor at `id` (validated: `0x01..=0xFE`).
     ///
     /// Handles keep the underlying transport alive; the `Bus` itself may be
@@ -395,6 +431,7 @@ impl<T: Transport> Bus<T> {
             id,
             timeout: self.timeout,
             mirrored: false,
+            strict_crc: self.strict_crc,
         })
     }
 
@@ -649,6 +686,9 @@ pub struct M0601<T: Transport = SerialTransport> {
     id: u8,
     timeout: Duration,
     mirrored: bool,
+    /// Reject CRC-failing telemetry rather than returning it advisory — see
+    /// [`with_strict_crc`](Self::with_strict_crc).
+    strict_crc: bool,
 }
 
 // Manual impl: handles are cheap to clone regardless of whether T is Clone.
@@ -659,6 +699,7 @@ impl<T: Transport> Clone for M0601<T> {
             id: self.id,
             timeout: self.timeout,
             mirrored: self.mirrored,
+            strict_crc: self.strict_crc,
         }
     }
 }
@@ -672,6 +713,7 @@ impl<T: Transport> std::fmt::Debug for M0601<T> {
             .field("id", &self.id)
             .field("timeout", &self.timeout)
             .field("mirrored", &self.mirrored)
+            .field("strict_crc", &self.strict_crc)
             .field("min_gap", &peek_min_gap(&self.port))
             .finish_non_exhaustive()
     }
@@ -703,6 +745,37 @@ impl<T: Transport> M0601<T> {
     /// Whether this handle flips velocity/current signs.
     pub fn is_mirrored(&self) -> bool {
         self.mirrored
+    }
+
+    /// Reject CRC-failing telemetry on this handle: any decoded [`Feedback`]
+    /// whose byte 9 fails the CRC-8/MAXIM check is turned into `Ok(None)` by
+    /// [`transact`](Self::transact), [`query`](Self::query) and
+    /// [`query_with`](Self::query_with), instead of being returned with
+    /// [`Feedback::crc_ok`]` == false`.
+    ///
+    /// Builder-style, for the single-motor [`open`](Self::open) path:
+    /// `M0601::open(port, id, t)?.with_strict_crc(true)`. Motors minted from a
+    /// [`Bus`] inherit the bus-wide setting
+    /// ([`Bus::with_strict_crc`]); this overrides it for one handle. The
+    /// default is **advisory** (`false`) — see [`Bus::with_strict_crc`] for
+    /// why, and prefer strict only where a corrupt frame would poison an
+    /// odometry integrator.
+    #[must_use]
+    pub fn with_strict_crc(mut self, strict: bool) -> Self {
+        self.strict_crc = strict;
+        self
+    }
+
+    /// Enable or disable strict CRC on an existing handle in place — the
+    /// setter form of [`with_strict_crc`](Self::with_strict_crc).
+    pub fn set_strict_crc(&mut self, strict: bool) {
+        self.strict_crc = strict;
+    }
+
+    /// Whether this handle rejects CRC-failing telemetry
+    /// ([`with_strict_crc`](Self::with_strict_crc)).
+    pub fn strict_crc(&self) -> bool {
+        self.strict_crc
     }
 
     /// The motor ID this handle addresses.
@@ -757,8 +830,16 @@ impl<T: Transport> M0601<T> {
     /// being written off because a neighbour happened to answer first.
     fn parse_reply(&self, tx: &[u8], rx: &[u8]) -> Option<Feedback> {
         let kind = ReplyKind::from_tx(tx)?;
-        let fb = frames(tx, rx)?
-            .find_map(|frame| parse_feedback(frame, kind).filter(|fb| fb.id == self.id))?;
+        // Pick the frame addressed to this handle. In strict-CRC mode a frame
+        // whose CRC does not check is not a candidate at all — so a stale,
+        // corrupt frame sitting ahead of the real reply in the same read is
+        // skipped rather than sinking the whole reply, and a later valid frame
+        // for this id can still be selected. Advisory mode keeps taking the
+        // first id-matching frame regardless of CRC.
+        let fb = frames(tx, rx)?.find_map(|frame| {
+            parse_feedback(frame, kind)
+                .filter(|fb| fb.id == self.id && (!self.strict_crc || fb.crc_ok))
+        })?;
         Some(self.adjust(fb))
     }
 
@@ -785,21 +866,56 @@ impl<T: Transport> M0601<T> {
     /// all expected outcomes, not errors. Used by the CLI's 50 Hz control
     /// loop with a short `wait` (~6 ms). Mirrored handles flip the signs of
     /// the parsed speed/current (the raw frame is untouched).
+    ///
+    /// When [`strict CRC`](Self::with_strict_crc) is enabled on this handle, a
+    /// decoded frame whose CRC does not check drops to `Ok(None)` here rather
+    /// than being returned with `crc_ok == false`.
     pub fn transact(&mut self, frame: &Frame, wait: Duration) -> Result<Option<Feedback>> {
         let rx = with_gap(&self.port, |t| t.send_recv(frame, wait))?;
+        // Strict handles reject CRC-failing frames during selection (see
+        // `parse_reply`), so bad telemetry never leaves the driver and a valid
+        // frame later in the same read is still picked up; the default stays
+        // advisory and returns the first id-matching frame with `crc_ok` set.
         Ok(self.parse_reply(frame, &rx))
     }
 
-    /// Query telemetry with a feedback (`0x74`) frame, waiting the
-    /// configured timeout for the reply.
+    /// Query telemetry with a feedback (`0x74`) frame, waiting the configured
+    /// timeout for the reply. Equivalent to
+    /// [`query_with(self.timeout())`](Self::query_with).
+    ///
+    /// The full-timeout wait suits one-shot and CLI use, where the backstop
+    /// timeout is an acceptable ceiling on a single call. It is **not** for a
+    /// realtime loop on a shared bus: the wait is held under the bus lock, so
+    /// a slow or silent motor stalls every other wheel for the whole timeout —
+    /// use [`query_with`](Self::query_with) with a short wait there.
     ///
     /// This is the only exchange whose reply carries the winding
     /// temperature (`temp_c` is `Some`); its position reading is the
     /// coarse 8-bit one (~1.4°). Drive replies via
     /// [`transact`](Self::transact) have it the other way around.
     pub fn query(&mut self) -> Result<Option<Feedback>> {
+        self.query_with(self.timeout)
+    }
+
+    /// Query telemetry with a feedback (`0x74`) frame, waiting only `wait`
+    /// for the reply instead of the configured backstop timeout.
+    ///
+    /// Same reply as [`query`](Self::query) — the winding temperature and the
+    /// coarse 8-bit position — but with a caller-chosen wait, so a realtime
+    /// control loop can bound how long the shared bus lock is held. That wait
+    /// is the whole cost of the transaction on a half-duplex bus (another
+    /// motor's frame cannot be interleaved into it), so a loop polling several
+    /// motors at ~55 Hz should pass a short wait — roughly **3–6 ms**, enough
+    /// to cover the ~0.9 ms reply frame plus the motor's turnaround — rather
+    /// than the tens-to-hundreds of ms a backstop [`timeout`](Self::timeout)
+    /// typically is. A reply that has not arrived within `wait` reads as a
+    /// silent bus (`Ok(None)`), which the loop simply retries next cycle.
+    ///
+    /// Honours [`strict CRC`](Self::with_strict_crc) exactly as
+    /// [`transact`](Self::transact) does.
+    pub fn query_with(&mut self, wait: Duration) -> Result<Option<Feedback>> {
         let frame = frame_feedback(self.id);
-        self.transact(&frame, self.timeout)
+        self.transact(&frame, wait)
     }
 
     /// Switch control mode, sending the `0xA0` frame five times as the

@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::protocol::{Frame, ReplyKind};
+use crate::protocol::{Frame, ReplyKind, raw_to_deg};
 
 /// The three closed-loop control modes of the M0601.
 ///
@@ -278,9 +278,134 @@ impl Telemetry {
     }
 }
 
+/// Unwraps the M0601's single-turn angle into a continuous multi-turn one.
+///
+/// The motor reports position as an absolute angle within one revolution —
+/// `0..=32767` raw = 0°..360° in a [`ReplyKind::Drive`] reply, or the coarse
+/// 8-bit angle in a query reply — and that reading is *clamped, never
+/// wrapped*: at the top of a turn it snaps back to 0° for the next. An
+/// odometry integrator needs the opposite: an angle that keeps counting up
+/// (or down) across revolution boundaries, so that "the wheel turned 3.5
+/// times forward" reads as `+1260°`, not as a 90° that is indistinguishable
+/// from a wheel that barely moved.
+///
+/// Feed each periodic sample to [`update`](Self::update) (degrees) or
+/// [`update_raw`](Self::update_raw) (a 16-bit reading, converted with the
+/// same scale as [`raw_to_deg`]) and read back
+/// the running total. The unwrap is done on the **shortest arc**: each new
+/// sample is compared against the previous one and the difference is folded
+/// into `(-180°, +180°]` before being added to the accumulated angle, so a
+/// `359° → 1°` step counts as `+2°` (the wheel rolled forward across the
+/// seam) and a `1° → 359°` step as `−2°` (it rolled back).
+///
+/// # Validity bound — samples must be closer than 180° apart
+///
+/// The shortest-arc rule cannot tell a small forward step from a large
+/// backward one: a *true* motion of more than 180° between two samples
+/// aliases to the short way round and is integrated with the wrong sign and
+/// magnitude. Poll often enough that the wheel cannot turn half a revolution
+/// between samples. At the M0601's 330 RPM ceiling that is 1980°/s, so even a
+/// leisurely 14 Hz per-wheel poll (the rate a four-motor bus sustains at
+/// ~55 Hz shared) sees only ~140° per step; at a more typical 120 RPM it is
+/// ~52° — comfortably inside the bound. Faster wheels need faster polling.
+///
+/// The type is pure (no I/O) and cheap to copy, so a control loop can keep
+/// one per wheel.
+///
+/// ```
+/// use m0601::PositionAccumulator;
+/// let mut acc = PositionAccumulator::new();
+/// assert_eq!(acc.update(350.0), 0.0);   // first sample: the reference, 0°
+/// assert_eq!(acc.update(10.0), 20.0);   // +20° across the 360°/0° seam
+/// assert_eq!(acc.update(350.0), 0.0);   // −20° back the short way
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct PositionAccumulator {
+    /// The previous absolute sample in degrees; `None` until the first
+    /// [`update`](Self::update) establishes the reference.
+    last: Option<f32>,
+    /// Continuous accumulated angle in degrees. Kept in `f64` so long runs
+    /// don't quantize: at ~100k° an `f32` has only ~0.008° of resolution and
+    /// small deltas start rounding visibly, while `f64` stays exact to well
+    /// past any realistic mission length.
+    cumulative: f64,
+}
+
+impl PositionAccumulator {
+    /// A fresh accumulator with no reference sample yet. The first sample fed
+    /// to it becomes the zero reference and yields `0.0` cumulative.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one absolute single-turn sample (degrees) and return the updated
+    /// continuous angle.
+    ///
+    /// The **first** sample establishes the reference and returns `0.0` — the
+    /// accumulator measures motion *relative to where it started*, not an
+    /// absolute heading. Every later sample adds the shortest-arc delta from
+    /// the previous sample (folded into `(-180°, +180°]`) to the running
+    /// total; see the type docs for the 180° validity bound.
+    ///
+    /// A non-finite sample (`NaN`/`±∞`) is ignored: the reference and the
+    /// accumulated angle are left untouched and the current total is
+    /// returned, so one bad reading cannot corrupt the integration or panic.
+    pub fn update(&mut self, sample_deg: f32) -> f64 {
+        if !sample_deg.is_finite() {
+            return self.cumulative;
+        }
+        match self.last {
+            None => {
+                self.last = Some(sample_deg);
+            }
+            Some(prev) => {
+                // Fold the raw difference into (-180, 180]: `rem_euclid`
+                // lands it in [0, 360), then anything past 180 is the same
+                // motion taken the short way round the other direction.
+                let mut delta = (f64::from(sample_deg) - f64::from(prev)).rem_euclid(360.0);
+                if delta > 180.0 {
+                    delta -= 360.0;
+                }
+                self.cumulative += delta;
+                self.last = Some(sample_deg);
+            }
+        }
+        self.cumulative
+    }
+
+    /// Feed one raw 16-bit position reading (`0..=32767` = 0°..360°, the
+    /// [`ReplyKind::Drive`] layout) and return the updated continuous angle.
+    ///
+    /// Convenience over [`update`](Self::update) using the same scale as
+    /// [`raw_to_deg`].
+    pub fn update_raw(&mut self, raw: u16) -> f64 {
+        self.update(raw_to_deg(raw))
+    }
+
+    /// The continuous accumulated angle in degrees (`0.0` before the first
+    /// sample). Positive is the direction the first motion went.
+    pub fn cumulative_deg(&self) -> f64 {
+        self.cumulative
+    }
+
+    /// The accumulated angle expressed in whole and fractional revolutions
+    /// (`cumulative_deg() / 360`).
+    pub fn revolutions(&self) -> f64 {
+        self.cumulative / 360.0
+    }
+
+    /// Forget the reference and zero the accumulated angle, as if newly
+    /// [`new`](Self::new)-constructed. The next sample re-establishes the
+    /// reference and returns `0.0`.
+    pub fn reset(&mut self) {
+        self.last = None;
+        self.cumulative = 0.0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Telemetry;
+    use super::{PositionAccumulator, Telemetry};
     use crate::Feedback;
     use crate::protocol::{ReplyKind, parse_feedback};
 
@@ -320,5 +445,98 @@ mod tests {
             Some(hi_res),
             "a query reply must not downgrade the retained hi-res angle"
         );
+    }
+
+    #[test]
+    fn first_sample_is_the_zero_reference() {
+        let mut acc = PositionAccumulator::new();
+        assert_eq!(acc.update(123.5), 0.0, "first sample yields 0 cumulative");
+        assert_eq!(acc.cumulative_deg(), 0.0);
+        assert_eq!(acc.revolutions(), 0.0);
+    }
+
+    #[test]
+    fn monotonic_forward_accumulates_past_a_full_turn() {
+        let mut acc = PositionAccumulator::new();
+        acc.update(0.0);
+        // Walk forward in 90° steps through more than one revolution.
+        for deg in [90.0, 180.0, 270.0, 0.0, 90.0] {
+            acc.update(deg);
+        }
+        // Five +90° steps = 450°, i.e. one and a quarter turns forward.
+        assert!((acc.cumulative_deg() - 450.0).abs() < 1e-3);
+        assert!(acc.cumulative_deg() > 360.0);
+        assert!((acc.revolutions() - 1.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn reverse_past_zero_goes_negative() {
+        let mut acc = PositionAccumulator::new();
+        acc.update(0.0);
+        // Walk backward across the 0°/360° seam.
+        for deg in [270.0, 180.0, 90.0, 0.0, 270.0] {
+            acc.update(deg);
+        }
+        // Five −90° steps = −450°.
+        assert!((acc.cumulative_deg() + 450.0).abs() < 1e-3);
+        assert!(acc.cumulative_deg() < 0.0);
+        assert!((acc.revolutions() + 1.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn seam_crossing_takes_the_short_arc() {
+        // 359° → 1° is +2° forward, not −358°.
+        let mut acc = PositionAccumulator::new();
+        acc.update(359.0);
+        assert!((acc.update(1.0) - 2.0).abs() < 1e-3);
+
+        // 1° → 359° is −2° back, not +358°.
+        let mut acc = PositionAccumulator::new();
+        acc.update(1.0);
+        assert!((acc.update(359.0) + 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn reset_clears_reference_and_total() {
+        let mut acc = PositionAccumulator::new();
+        acc.update(10.0);
+        acc.update(100.0);
+        assert!(acc.cumulative_deg() > 0.0);
+        acc.reset();
+        assert_eq!(acc.cumulative_deg(), 0.0);
+        // Next sample re-establishes the reference and yields 0 again.
+        assert_eq!(acc.update(200.0), 0.0);
+        assert_eq!(acc.update(210.0), 10.0);
+    }
+
+    #[test]
+    fn non_finite_sample_is_ignored() {
+        let mut acc = PositionAccumulator::new();
+        acc.update(10.0);
+        acc.update(40.0); // +30
+        let before = acc.cumulative_deg();
+        // NaN and infinities leave the state untouched and never panic.
+        assert_eq!(acc.update(f32::NAN), before);
+        assert_eq!(acc.update(f32::INFINITY), before);
+        assert_eq!(acc.update(f32::NEG_INFINITY), before);
+        assert_eq!(acc.cumulative_deg(), before);
+        // A good sample after the bad ones still integrates from the last
+        // valid reference (40°), not from the discarded garbage.
+        assert!((acc.update(70.0) - (before + 30.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn update_raw_matches_the_drive_reply_scale() {
+        // Raw 0 → 8192 is a quarter turn (~90°), safely inside the 180° fold
+        // bound; update_raw and the raw_to_deg-then-update path must agree.
+        let mut acc = PositionAccumulator::new();
+        assert_eq!(acc.update_raw(0), 0.0);
+        let via_raw = acc.update_raw(8_192);
+
+        let mut acc2 = PositionAccumulator::new();
+        acc2.update(crate::protocol::raw_to_deg(0));
+        let via_deg = acc2.update(crate::protocol::raw_to_deg(8_192));
+        assert_eq!(via_raw, via_deg);
+        assert!((via_raw - 90.0).abs() < 0.01);
     }
 }
