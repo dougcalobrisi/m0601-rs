@@ -153,9 +153,13 @@ Notes on behavior you'll actually notice:
 - Temperature updates every ~200 ms (it only arrives in the periodic
   telemetry query — drive replies don't carry it); `--` until the first.
 - Every exit path stops the wheel — quit keys, panics, SIGINT/SIGTERM/
-  SIGHUP (a dropped SSH session included). The stop is a fast step to
-  zero plus brake, not a gentle ramp. On SIGKILL or power loss the
-  polling stops and the motor coasts, per protocol.
+  SIGHUP (a dropped SSH session included). The stop ramps to zero at a
+  moderate acceleration (the library default `SAFE_STOP_ACCEL` = 5; the
+  library can override it via `Bus::with_stop_accel` / `BusTiming`, though
+  `control` itself always uses the default) and then brakes — gentler than
+  a hard step, to reduce the chance of tripping the overcurrent protection
+  mid-stop. On SIGKILL or power loss the polling stops and the motor
+  coasts, per protocol.
 
 ### `drive` — scriptable motion in one mode
 
@@ -401,8 +405,9 @@ does exactly this: its `Config::bus_timing()` feeds `limits.accel` into
 
 **Budgeting more than two motors:** each motor must see *its* drive frame
 at ≥50 Hz, so N motors need ≥N×50 frames/s through one bus, plus their
-replies, plus gaps. Four wheels at the default gap is ~10 ms of bus
-occupancy per 20 ms cycle before any telemetry is read. Keep
+replies, plus gaps. Four wheels at the default gap is ~13.5 ms of bus
+occupancy per 20 ms cycle before any telemetry is read — 4 × (the ~0.9 ms
+frame time + the 2.5 ms gap that follows each frame). Keep
 per-transaction reply waits short (the CLI's loops use 6 ms), read
 telemetry round-robin — one motor per cycle, not all four — and never
 *substitute* a query for a drive frame: the motor coasts through the

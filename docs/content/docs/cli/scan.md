@@ -52,7 +52,7 @@ While a poll runs, a progress bar tracks it with an ETA derived from your timeou
 (`~ceil(count × timeout)` seconds):
 
 ```
-Polling 0x01..0xFE (254 IDs, ~38s):
+Polling 0x01..0xFE (254 IDs, ~39s):
 [############------------------]
 ```
 

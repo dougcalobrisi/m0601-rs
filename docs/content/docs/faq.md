@@ -39,9 +39,12 @@ often the same A/B swap that causes a silent bus) and the reading will come back
 The set-ID frame is unaddressed — every motor on the bus takes the new ID. If you run
 it with more than one motor connected, you get a bus full of duplicates that can only
 be untangled by disconnecting them one at a time. The CLI guards against this by
-polling all 254 addresses first and refusing if it sees more than one, but if you
-scripted it with `--yes` on a shared bus, that's the cause. Renumber one motor at a
-time, physically. See [`set-id`]({{< relref "cli/set-id" >}}).
+polling all 254 addresses first and refusing if it sees more than one — and that
+guard runs unconditionally, *before* any prompt, so `--yes` does not bypass it
+(`--yes` only skips the interactive "type yes" confirmation). The one way to still
+get a mass rename is duplicate IDs colliding so the scan detects just a single
+motor. Renumber one motor at a time, physically. See
+[`set-id`]({{< relref "cli/set-id" >}}).
 
 ## An empty `scan` — does that mean the bus is empty?
 

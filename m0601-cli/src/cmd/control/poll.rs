@@ -2,8 +2,10 @@
 //! touches the bus — and it is the one place [`M0601::safe_stop`] runs, on
 //! every exit path including a panic inside its own loop body.
 //!
-//! The stop is a step to zero followed by the electric brake, not a ramp;
-//! `safe_stop` uses accel 1, the motor's fastest setting.
+//! The stop ramps to zero followed by the electric brake; `safe_stop` uses
+//! the bus's `stop_accel` (default `SAFE_STOP_ACCEL` = 5, a moderate ramp,
+//! not the motor's fastest) to reduce the chance of tripping overcurrent
+//! mid-stop — it does not sense load, so it can't guarantee no trip.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;

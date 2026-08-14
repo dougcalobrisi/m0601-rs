@@ -34,7 +34,7 @@ The rate is held by measuring how long each poll took and sleeping the remainder
 ```
 
 Timestamp, a running count, the reported mode, and the decoded telemetry. `OK`
-becomes `FAULT(names)` if a protection bit is set.
+becomes `FAULT <names>` (names joined with ` | `) if a protection bit is set.
 
 ## It's built to survive a rough bus
 
