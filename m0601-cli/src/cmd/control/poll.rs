@@ -8,7 +8,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use m0601::protocol::{
     CUR_MAX, CUR_MIN, Frame, POS_MAX, RPM_MAX, RPM_MIN, frame_brake, frame_current, frame_feedback,
@@ -17,12 +17,7 @@ use m0601::protocol::{
 use m0601::{M0601, Mode};
 
 use super::state::{CmdState, Shared, lock};
-
-/// 50 Hz — the protocol's minimum rate for sustained motion.
-const CYCLE: Duration = Duration::from_millis(20);
-/// Per-cycle reply wait. Well inside the cycle budget (10 bytes @ 115200
-/// ≈ 0.9 ms each way); the CLI-level `--timeout` is never used here.
-const REPLY_WAIT: Duration = Duration::from_millis(6);
+use crate::cmd::{CYCLE, REPLY_WAIT, next_deadline};
 
 /// Thread entry point. Runs the loop, then unconditionally stops the motor
 /// — whether the loop ended by flag or by panicking.
@@ -81,7 +76,7 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
                             let tele = lock(&shared.telemetry);
                             tele.position_deg
                                 .or_else(|| tele.fb.map(|fb| fb.position_deg))
-                                .map_or(0, super::ui::deg_to_raw)
+                                .map_or(0, super::keys::deg_to_raw)
                         }
                         Mode::Velocity | Mode::Current => 0,
                     });
@@ -125,20 +120,14 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
         }
 
         cycle += 1;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        }
-        next += CYCLE;
-        if next < now {
-            next = now + CYCLE; // fell behind — re-anchor instead of bursting
-        }
+        next = next_deadline(next);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CYCLE, active_frame};
+    use super::active_frame;
+    use crate::cmd::CYCLE;
     use crate::cmd::control::state::CmdState;
     use m0601::Mode;
     use m0601::protocol::DRIVE_HZ_MIN;

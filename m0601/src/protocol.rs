@@ -541,3 +541,46 @@ pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
 pub fn parse_feedback_strict(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
     parse_feedback(data, kind).filter(|fb| fb.crc_ok)
 }
+
+/// Strip a leading half-duplex TX echo from a raw reply.
+///
+/// Some RS485 adapters loop the host's own transmission back, so a reply can
+/// arrive as `<tx frame><telemetry>`. An exact `tx` prefix is always an echo
+/// (a genuine reply can never byte-equal the frame that elicited it — its
+/// byte 1 is a mode value, not the command), so it is removed unconditionally.
+/// A *partial* echo cannot be matched and passes through untouched — that
+/// misaligned case is what [`frames`] rejects; see its docs for why that
+/// matters more than it looks.
+pub(crate) fn strip_echo<'a>(tx: &[u8], rx: &'a [u8]) -> &'a [u8] {
+    rx.strip_prefix(tx).unwrap_or(rx)
+}
+
+/// Strip a leading half-duplex TX echo ([`strip_echo`]) and split what remains
+/// into whole frames. Returns `None` unless that is a non-empty exact multiple
+/// of [`FRAME_LEN`].
+///
+/// # Why the length must divide evenly
+///
+/// [`strip_echo`] is all-or-nothing: if the echo is short by even one byte it
+/// is not recognised, and offset 0 is then no longer a frame boundary. Parsing
+/// from there anyway yields a frame *straddling* the tail of the echo and the
+/// head of the real reply — and that garbage is not obviously garbage. It looks
+/// like telemetry, it passes the per-motor ID check (a truncated echo begins
+/// with the addressed motor's own ID, exactly as a genuine reply does), and it
+/// decodes to plausible values. Measured across every cut point, a wheel
+/// turning at 300 RPM read back as 0, 1, 258 or 512 RPM — and for seven of the
+/// nine cuts that is under the `< 10 RPM` guard callers rely on before entering
+/// position mode, which is the one place a wrong speed reading is actively
+/// dangerous.
+///
+/// A well-formed transaction is always a whole number of frames — the reply
+/// alone, or the echo plus the reply — so anything else means the stream is
+/// misaligned and none of it can be trusted. Rejecting on that costs at most
+/// one dropped reading, which every caller already tolerates.
+pub(crate) fn frames<'a>(tx: &[u8], rx: &'a [u8]) -> Option<std::slice::ChunksExact<'a, u8>> {
+    let rx = strip_echo(tx, rx);
+    if rx.is_empty() || !rx.len().is_multiple_of(FRAME_LEN) {
+        return None;
+    }
+    Some(rx.chunks_exact(FRAME_LEN))
+}

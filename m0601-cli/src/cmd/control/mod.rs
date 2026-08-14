@@ -22,6 +22,8 @@
 //! 4. **SIGKILL / power loss** — nothing can run, and that is fine *by
 //!    protocol*: polling stops, so the motor coasts to a stop.
 
+mod draw;
+mod keys;
 mod poll;
 mod state;
 mod ui;

@@ -179,6 +179,10 @@ impl fmt::Display for Faults {
 /// precision; round only when displaying (the CLI uses `{:+.3}` A and
 /// `{:.1}`°).
 #[derive(Debug, Clone, Copy, PartialEq)]
+// Returned by the driver, never constructed by callers: `#[non_exhaustive]`
+// keeps room to surface a new wire field (the protocol has unused frame bytes)
+// without it being a breaking change. `raw` is the escape hatch until then.
+#[non_exhaustive]
 pub struct Feedback {
     /// Responding motor's RS485 ID.
     pub id: u8,
@@ -251,6 +255,9 @@ impl Feedback {
 /// layouts. Feed every parsed reply to [`absorb`](Self::absorb) and read
 /// the retained fields instead.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+// Built by `absorb`ing replies, not by callers; `#[non_exhaustive]` leaves room
+// to retain another field later. `Default` still constructs it in-crate.
+#[non_exhaustive]
 pub struct Telemetry {
     /// Most recent reply of either kind — the source of mode, speed,
     /// current and faults, which decode identically in both layouts.

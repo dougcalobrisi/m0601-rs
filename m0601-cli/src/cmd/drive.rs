@@ -22,14 +22,8 @@ use m0601::protocol::{
 };
 use m0601::{Feedback, M0601, Mode};
 
-use crate::cmd::POSITION_ENTRY_RPM;
+use crate::cmd::{CYCLE, POSITION_ENTRY_RPM, REPLY_WAIT, next_deadline};
 
-/// 50 Hz drive cadence — the protocol's floor for sustained motion.
-const CYCLE: Duration = Duration::from_millis(20);
-/// Per-cycle reply wait. Well inside the 20 ms cycle budget (10 bytes @
-/// 115200 ≈ 0.9 ms each way); the CLI-level `--timeout` is not used in the
-/// loop.
-const REPLY_WAIT: Duration = Duration::from_millis(6);
 /// Refresh the winding temperature every Nth cycle with an extra 0x74 query
 /// (drive replies carry no temperature).
 const TEMP_EVERY: u64 = 10;
@@ -206,14 +200,7 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
         }
 
         cycle += 1;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        }
-        next += CYCLE;
-        if next < now {
-            next = now + CYCLE; // fell behind — re-anchor instead of bursting
-        }
+        next = next_deadline(next);
     }
 
     drop(stop); // brake now, before the closing line
@@ -257,7 +244,8 @@ fn print_status(fb: &Feedback, temp: Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CYCLE, Setpoint, drive_frame, mode_of, run_deadline};
+    use super::{Setpoint, drive_frame, mode_of, run_deadline};
+    use crate::cmd::CYCLE;
     use m0601::Mode;
     use m0601::protocol::DRIVE_HZ_MIN;
     use std::time::{Duration, Instant};

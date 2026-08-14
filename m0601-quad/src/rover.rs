@@ -46,6 +46,18 @@ pub fn open(cfg: &Config) -> m0601::Result<Rover> {
     })
 }
 
+impl Rover {
+    /// A [`StopGuard`] armed on this rover's bus and wheel IDs. Every motion
+    /// path arms one before its first frame, so any exit — `?`, panic, or a
+    /// normal return — lands on a vehicle-wide stop.
+    pub fn stop_guard(&self) -> StopGuard {
+        StopGuard {
+            bus: self.bus.clone(),
+            ids: self.ids.clone(),
+        }
+    }
+}
+
 /// Stops every wheel when dropped — armed BEFORE the first frame goes
 /// out, so `?`-propagation and panics between "motors moving" and "loop
 /// exited" still land on a vehicle-wide stop.

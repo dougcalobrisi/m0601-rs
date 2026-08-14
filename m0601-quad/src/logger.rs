@@ -17,15 +17,56 @@ use crate::pilot::LogRow;
 pub const CSV_HEADER: &str = "timestamp,motor_id,mode,speed_rpm,current_a,temp_c,position_deg,\
                               error_code,error_str,raw_hex,wheel_name,cmd_rpm";
 
-/// Runs until the channel closes (the pilot dropping its sender ends us).
-/// Returns the rows written, for the caller's exit summary.
-pub fn run(rx: Receiver<LogRow>, path: &str, names: &[String; 4]) -> std::io::Result<u64> {
+/// Format one CSV telemetry row (no trailing newline) in the [`CSV_HEADER`]
+/// column order. Shared by the headless `monitor` command and this logger
+/// thread so a column change is made in exactly one place.
+///
+/// `temp_c` and `position_deg` are passed in rather than read from `fb`
+/// because the logger prefers the hi-res angle and last-seen temperature its
+/// [`Telemetry`](m0601::Telemetry) accumulator retains, while `monitor` has
+/// only the bare reply. `cmd_rpm` is `None` for `monitor` (which commands no
+/// motion) and leaves that trailing column empty.
+pub fn csv_row(
+    stamp: jiff::Timestamp,
+    fb: &m0601::Feedback,
+    temp_c: Option<u8>,
+    position_deg: f32,
+    name: &str,
+    cmd_rpm: Option<i16>,
+) -> String {
+    format!(
+        "{stamp},{:#04X},{},{},{:.3},{},{:.1},{},{},{},{},{}",
+        fb.id,
+        fb.mode_name(),
+        fb.speed_rpm,
+        fb.current_a,
+        temp_c.map_or_else(String::new, |t| t.to_string()),
+        position_deg,
+        fb.faults.0,
+        fb.faults,
+        fb.raw_hex(),
+        name,
+        cmd_rpm.map_or_else(String::new, |c| c.to_string()),
+    )
+}
+
+/// Open `path` for appending (creating it if absent) and write the
+/// [`CSV_HEADER`] first when the file is newly created. Shared with the
+/// `monitor` command so the header/append handling lives once.
+pub fn open_appending(path: &str) -> std::io::Result<BufWriter<std::fs::File>> {
     let file = OpenOptions::new().create(true).append(true).open(path)?;
     let new_file = file.metadata().map(|m| m.len() == 0).unwrap_or(false);
     let mut out = BufWriter::new(file);
     if new_file {
         writeln!(out, "{CSV_HEADER}")?;
     }
+    Ok(out)
+}
+
+/// Runs until the channel closes (the pilot dropping its sender ends us).
+/// Returns the rows written, for the caller's exit summary.
+pub fn run(rx: Receiver<LogRow>, path: &str, names: &[String; 4]) -> std::io::Result<u64> {
+    let mut out = open_appending(path)?;
 
     let mut rows: u64 = 0;
     let mut unflushed: u64 = 0;
@@ -37,20 +78,15 @@ pub fn run(rx: Receiver<LogRow>, path: &str, names: &[String; 4]) -> std::io::Re
             };
             writeln!(
                 out,
-                "{stamp},{:#04X},{},{},{:.3},{},{:.1},{},{},{},{},{}",
-                fb.id,
-                fb.mode_name(),
-                fb.speed_rpm,
-                fb.current_a,
-                w.telemetry
-                    .temp_c
-                    .map_or_else(|| "".to_owned(), |t| t.to_string()),
-                w.telemetry.position_deg.unwrap_or(fb.position_deg),
-                fb.faults.0,
-                fb.faults,
-                fb.raw_hex(),
-                names[i],
-                w.cmd_rpm,
+                "{}",
+                csv_row(
+                    stamp,
+                    &fb,
+                    w.telemetry.temp_c,
+                    w.telemetry.position_deg.unwrap_or(fb.position_deg),
+                    &names[i],
+                    Some(w.cmd_rpm),
+                )
             )?;
             rows += 1;
             unflushed += 1;

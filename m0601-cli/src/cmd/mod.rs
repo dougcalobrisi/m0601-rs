@@ -1,5 +1,7 @@
 //! Subcommand implementations.
 
+use std::time::{Duration, Instant};
+
 pub mod control;
 pub mod drive;
 pub mod info;
@@ -10,6 +12,42 @@ pub mod set_id;
 
 /// The protocol's speed ceiling for entering position mode, in RPM.
 pub const POSITION_ENTRY_RPM: i16 = 10;
+
+/// 50 Hz — the protocol's floor for sustained motion. The batch `drive` loop
+/// and the interactive [`control`] poll thread both hold this cadence.
+pub const CYCLE: Duration = Duration::from_millis(20);
+
+/// Per-cycle reply wait, well inside the [`CYCLE`] budget (a 10-byte frame is
+/// ~0.9 ms each way at 115200); the CLI-level `--timeout` is never used in
+/// either loop.
+pub const REPLY_WAIT: Duration = Duration::from_millis(6);
+
+/// Advance an absolute-deadline scheduler by one [`CYCLE`]: sleep until the
+/// current `next` deadline, then return the following one — re-anchoring to
+/// *now* if the loop already fell more than a cycle behind, so a slow cycle is
+/// absorbed rather than repaid as a burst of back-to-back frames.
+///
+/// Both 50 Hz loops (`drive` and `control::poll`) share this so their cadence,
+/// and its behaviour under overrun, stay identical. Absolute deadlines matter:
+/// sleeping `CYCLE` *after* each cycle's variable work (a reply wait, an extra
+/// query) would drag the loop below the 50 Hz floor.
+pub fn next_deadline(next: Instant) -> Instant {
+    let now = Instant::now();
+    if next > now {
+        std::thread::sleep(next - now);
+    }
+    let advanced = next + CYCLE;
+    // Re-check the clock *after* the sleep: an oversleep (the sleep returning
+    // late under OS scheduling) leaves the pre-sleep `now` stale, and comparing
+    // against it would let `advanced` be handed back already in the past —
+    // exactly the back-to-back burst this branch exists to prevent.
+    let now = Instant::now();
+    if advanced < now {
+        now + CYCLE // fell behind — re-anchor instead of bursting
+    } else {
+        advanced
+    }
+}
 
 /// Whether the wheel is *confirmed* slow enough to switch into position mode.
 ///

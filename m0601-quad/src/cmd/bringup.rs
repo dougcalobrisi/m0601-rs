@@ -1,24 +1,18 @@
-//! Subcommand implementations. Ordered like the bring-up sequence:
-//! `check` (no port) → `check --probe` (read-only) → `monitor` (no
-//! motion) → `jog`/`calibrate` (one wheel, bounded) → `drive` (the TUI).
+//! Read-only and single-wheel bring-up commands: `check`, `monitor`, `jog`,
+//! `calibrate`, `stop`. None of these run the full pilot; the drive TUI lives
+//! in [`drive`](mod@super::drive).
 
-use std::error::Error;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant};
 
-use crate::clock::RealClock;
-use crate::config::{Config, End, Side, WheelCfg};
-use crate::io::SimWheel;
+use crate::config::Config;
 use crate::logger;
-use crate::pilot::{self, Pilot};
-use crate::rover::{self, StopGuard};
-use crate::state::{Shared, lock};
-use crate::ui::{self, WheelInfo};
+use crate::rover;
+use crate::state::Shared;
 
-type CmdResult = Result<(), Box<dyn Error>>;
+use super::{CmdResult, PollQuery, find_wheel};
 
 /// `check`: validate, print the resolved table; `--probe` additionally
 /// opens the port and asks each wheel to answer inside the configured
@@ -123,18 +117,7 @@ pub fn monitor(cfg: &Config, shared: &Arc<Shared>) -> CmdResult {
         .collect();
 
     let mut csv = match &cfg.log {
-        Some(log) => {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log.path)?;
-            let fresh = file.metadata().map(|m| m.len() == 0).unwrap_or(false);
-            let mut out = std::io::BufWriter::new(file);
-            if fresh {
-                writeln!(out, "{}", logger::CSV_HEADER)?;
-            }
-            Some(out)
-        }
+        Some(log) => Some(logger::open_appending(&log.path)?),
         None => None,
     };
 
@@ -162,18 +145,15 @@ pub fn monitor(cfg: &Config, shared: &Arc<Shared>) -> CmdResult {
                     if let Some(out) = csv.as_mut() {
                         writeln!(
                             out,
-                            "{},{:#04X},{},{},{:.3},{},{:.1},{},{},{},{},",
-                            jiff::Timestamp::now(),
-                            fb.id,
-                            fb.mode_name(),
-                            fb.speed_rpm,
-                            fb.current_a,
-                            fb.temp_c.map_or(String::new(), |t| t.to_string()),
-                            fb.position_deg,
-                            fb.faults.0,
-                            fb.faults,
-                            fb.raw_hex(),
-                            names[i],
+                            "{}",
+                            logger::csv_row(
+                                jiff::Timestamp::now(),
+                                &fb,
+                                fb.temp_c,
+                                fb.position_deg,
+                                &names[i],
+                                None,
+                            )
                         )?;
                     }
                 }
@@ -192,39 +172,6 @@ pub fn monitor(cfg: &Config, shared: &Arc<Shared>) -> CmdResult {
     Ok(())
 }
 
-/// Small extension so monitor/jog can query without importing protocol
-/// details everywhere.
-trait PollQuery {
-    fn poll_query(&mut self, wait: Duration) -> m0601::Result<Option<m0601::Feedback>>;
-}
-
-impl PollQuery for m0601::M0601 {
-    fn poll_query(&mut self, wait: Duration) -> m0601::Result<Option<m0601::Feedback>> {
-        let frame = m0601::protocol::frame_feedback(self.id());
-        self.transact(&frame, wait)
-    }
-}
-
-/// Resolve `front-left` / `fl` / `front-driver` … to a configured wheel.
-pub fn find_wheel<'c>(cfg: &'c Config, name: &str) -> Result<&'c WheelCfg, String> {
-    let n = name.to_ascii_lowercase();
-    let (end, side) = match n.as_str() {
-        "front-left" | "fl" | "front-driver" => (End::Front, Side::Left),
-        "front-right" | "fr" | "front-pass" => (End::Front, Side::Right),
-        "rear-left" | "rl" | "rear-driver" | "back-left" => (End::Rear, Side::Left),
-        "rear-right" | "rr" | "rear-pass" | "back-right" => (End::Rear, Side::Right),
-        _ => {
-            return Err(format!(
-                "unknown wheel \"{name}\" (use front-left/front-right/rear-left/rear-right)"
-            ));
-        }
-    };
-    cfg.wheels
-        .iter()
-        .find(|w| w.end == end && w.side == side)
-        .ok_or_else(|| format!("no wheel configured at {end}-{side}"))
-}
-
 /// `jog`: one wheel, bounded time, then a full-vehicle stop.
 pub fn jog(cfg: &Config, shared: &Arc<Shared>, wheel: &str, rpm: i16, secs: f64) -> CmdResult {
     let target = find_wheel(cfg, wheel)?;
@@ -233,10 +180,7 @@ pub fn jog(cfg: &Config, shared: &Arc<Shared>, wheel: &str, rpm: i16, secs: f64)
 
     let rover = rover::open(cfg)?;
     // Armed before the first frame: every exit path stops the vehicle.
-    let guard = StopGuard {
-        bus: rover.bus.clone(),
-        ids: rover.ids.clone(),
-    };
+    let guard = rover.stop_guard();
     // Fail explicitly: silently jogging a different wheel than asked
     // would be a safety bug, not a fallback.
     let idx = rover
@@ -270,10 +214,7 @@ pub fn jog(cfg: &Config, shared: &Arc<Shared>, wheel: &str, rpm: i16, secs: f64)
 /// comments invites clobbering; a copy-pasteable block is safer.
 pub fn calibrate(cfg: &Config, shared: &Arc<Shared>) -> CmdResult {
     let rover = rover::open(cfg)?;
-    let guard = StopGuard {
-        bus: rover.bus.clone(),
-        ids: rover.ids.clone(),
-    };
+    let guard = rover.stop_guard();
     let mut wheels = rover.wheels;
     let stdin = std::io::stdin();
     let mut results: Vec<(u8, String, bool, bool)> = Vec::new(); // id, name, old, new
@@ -353,204 +294,4 @@ pub fn stop(cfg: &Config) -> CmdResult {
     rover.bus.safe_stop_all(&rover.ids);
     println!("done (braked).");
     Ok(())
-}
-
-pub struct DriveFlags {
-    pub dry_run: bool,
-    pub ignore_silent: bool,
-    pub ignore_motion: bool,
-    pub ignore_faults: bool,
-}
-
-/// `drive`: the 2×2 TUI. Fail-closed startup, then pilot + UI + logger.
-pub fn drive(cfg: Config, shared: Arc<Shared>, flags: DriveFlags, warned: bool) -> CmdResult {
-    let infos: [WheelInfo; 4] = {
-        let ws = cfg.wheels_in_grid_order();
-        [0, 1, 2, 3].map(|i| WheelInfo {
-            label: ws[i].corner(),
-            id: ws[i].id,
-            reversed: ws[i].reversed(),
-        })
-    };
-    let labels: [String; 4] = [0, 1, 2, 3].map(|i| infos[i].label.clone());
-    let sides: [Side; 4] = {
-        let ws = cfg.wheels_in_grid_order();
-        [0, 1, 2, 3].map(|i| ws[i].side)
-    };
-
-    // Logger (optional).
-    let (log_tx, log_thread) = match &cfg.log {
-        Some(log) => {
-            let (tx, rx) = sync_channel::<pilot::LogRow>(64);
-            let path = log.path.clone();
-            let names = labels.clone();
-            (
-                Some(tx),
-                Some(std::thread::spawn(move || logger::run(rx, &path, &names))),
-            )
-        }
-        None => (None, None),
-    };
-
-    if flags.dry_run {
-        // No port is opened at all: SimWheels behind the same seam.
-        let ws = cfg.wheels_in_grid_order();
-        let wheels = [0, 1, 2, 3].map(|i| SimWheel::new(ws[i].id, ws[i].reversed()));
-        let mut p = Pilot::new(
-            wheels,
-            sides,
-            labels,
-            cfg.clone(),
-            RealClock,
-            Arc::clone(&shared),
-            || {},
-            log_tx,
-            Some(pilot::UI_WATCHDOG),
-        );
-        *lock(&shared.ui_tick) = Instant::now();
-        let pilot_thread = std::thread::spawn(move || pilot::run_guarded(&mut p));
-        let ui_result = run_ui_stopping_pilot(&shared, pilot_thread, || {
-            ui::run(&shared, &infos, &cfg, "DRY RUN (no port)")
-        });
-        finish_logger(log_thread, &shared);
-        ui_result?;
-        return Ok(());
-    }
-
-    let mut rover = rover::open(&cfg)?;
-    if !rover.low_latency {
-        eprintln!("[!] kernel low-latency not set; poll timing may miss (see USAGE.md)");
-    }
-
-    // Fail-closed startup: ask "is it CONFIRMED safe?", refuse on any
-    // no — the same polarity as the CLI's position_entry_allowed.
-    startup_gate(&cfg, &mut rover.wheels, &flags)?;
-
-    // Armed before the first drive frame.
-    let guard = StopGuard {
-        bus: rover.bus.clone(),
-        ids: rover.ids.clone(),
-    };
-    rover.bus.set_mode_all(&rover.ids, m0601::Mode::Velocity)?;
-
-    if warned || !rover.low_latency {
-        // Reusing the CLI's pattern: let warnings be read before the
-        // alternate screen swallows the scrollback.
-        std::thread::sleep(Duration::from_millis(1500));
-    }
-
-    let wheels: [m0601::M0601; 4] = match rover.wheels.try_into() {
-        Ok(w) => w,
-        Err(_) => return Err("expected 4 wheels".into()),
-    };
-    let stop_bus = rover.bus.clone();
-    let stop_ids = rover.ids.clone();
-    let mut p = Pilot::new(
-        wheels,
-        sides,
-        labels,
-        cfg.clone(),
-        RealClock,
-        Arc::clone(&shared),
-        move || stop_bus.safe_stop_all(&stop_ids),
-        log_tx,
-        Some(pilot::UI_WATCHDOG),
-    );
-    // Stamp the UI heartbeat NOW: `Shared::new` ran before the startup
-    // gate and the warning pause, so the stale stamp would trip the
-    // pilot's UI watchdog on its very first cycle and overwrite the
-    // ready prompt with a false "UI stopped ticking" alarm.
-    *lock(&shared.ui_tick) = Instant::now();
-    let pilot_thread = std::thread::spawn(move || pilot::run_guarded(&mut p));
-
-    let ui_result = run_ui_stopping_pilot(&shared, pilot_thread, || {
-        ui::run(&shared, &infos, &cfg, &cfg.bus.port)
-    });
-    drop(guard); // belt-and-braces second stop
-    finish_logger(log_thread, &shared);
-    ui_result?;
-    println!("all wheels stopped (braked).");
-    Ok(())
-}
-
-/// Run the UI and, on ANY exit — return or panic — clear `running` and
-/// join the pilot before handing control back. Unwinding straight past
-/// the join would *detach* the pilot thread, which could then re-command
-/// nonzero velocity after the caller's `StopGuard` stop and leave the
-/// motors holding speed at process exit. The panic is re-raised only
-/// after the pilot is provably gone.
-fn run_ui_stopping_pilot<R>(
-    shared: &Arc<Shared>,
-    pilot: std::thread::JoinHandle<()>,
-    ui: impl FnOnce() -> R,
-) -> R {
-    // AssertUnwindSafe: the closure only touches `Shared`, whose locks
-    // are poison-tolerant by design.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ui));
-    shared.running.store(false, Ordering::Relaxed);
-    let _ = pilot.join();
-    match result {
-        Ok(r) => r,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
-fn finish_logger(
-    thread: Option<std::thread::JoinHandle<std::io::Result<u64>>>,
-    shared: &Arc<Shared>,
-) {
-    if let Some(t) = thread {
-        match t.join() {
-            Ok(Ok(rows)) => {
-                let dropped = shared.dropped_log_rows.load(Ordering::Relaxed);
-                if dropped > 0 {
-                    eprintln!("[!] log: wrote {rows} rows, dropped {dropped}");
-                }
-            }
-            Ok(Err(e)) => eprintln!("[!] log: {e}"),
-            Err(_) => eprintln!("[!] log thread panicked"),
-        }
-    }
-}
-
-/// Probe every wheel once and refuse to start unless each is confirmed
-/// present, still, and fault-free (each check has an explicit override).
-fn startup_gate(
-    cfg: &Config,
-    wheels: &mut [m0601::M0601],
-    flags: &DriveFlags,
-) -> Result<(), Box<dyn Error>> {
-    let mut refusals = Vec::new();
-    for (i, w) in wheels.iter_mut().enumerate() {
-        let corner = cfg.wheels_in_grid_order()[i].corner();
-        match w.query()? {
-            None => {
-                if !flags.ignore_silent {
-                    refusals.push(format!(
-                        "{corner} (0x{:02X}) did not reply — --ignore-silent to override",
-                        w.id()
-                    ));
-                }
-            }
-            Some(fb) => {
-                if fb.speed_rpm.unsigned_abs() > 5 && !flags.ignore_motion {
-                    refusals.push(format!(
-                        "{corner} already turning at {:+} RPM — --ignore-motion to override",
-                        fb.speed_rpm
-                    ));
-                }
-                if !fb.faults.is_ok() && !flags.ignore_faults {
-                    refusals.push(format!(
-                        "{corner} reports {} — --ignore-faults to override",
-                        fb.faults
-                    ));
-                }
-            }
-        }
-    }
-    if refusals.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("refusing to start:\n  {}", refusals.join("\n  ")).into())
-    }
 }
