@@ -324,8 +324,11 @@ pub struct PositionAccumulator {
     /// The previous absolute sample in degrees; `None` until the first
     /// [`update`](Self::update) establishes the reference.
     last: Option<f32>,
-    /// Continuous accumulated angle in degrees.
-    cumulative: f32,
+    /// Continuous accumulated angle in degrees. Kept in `f64` so long runs
+    /// don't quantize: at ~100k° an `f32` has only ~0.008° of resolution and
+    /// small deltas start rounding visibly, while `f64` stays exact to well
+    /// past any realistic mission length.
+    cumulative: f64,
 }
 
 impl PositionAccumulator {
@@ -347,7 +350,7 @@ impl PositionAccumulator {
     /// A non-finite sample (`NaN`/`±∞`) is ignored: the reference and the
     /// accumulated angle are left untouched and the current total is
     /// returned, so one bad reading cannot corrupt the integration or panic.
-    pub fn update(&mut self, sample_deg: f32) -> f32 {
+    pub fn update(&mut self, sample_deg: f32) -> f64 {
         if !sample_deg.is_finite() {
             return self.cumulative;
         }
@@ -359,7 +362,8 @@ impl PositionAccumulator {
                 // Fold the raw difference into (-180, 180]: `rem_euclid`
                 // lands it in [0, 360), then anything past 180 is the same
                 // motion taken the short way round the other direction.
-                let mut delta = (sample_deg - prev).rem_euclid(360.0);
+                let mut delta =
+                    (f64::from(sample_deg) - f64::from(prev)).rem_euclid(360.0);
                 if delta > 180.0 {
                     delta -= 360.0;
                 }
@@ -375,19 +379,19 @@ impl PositionAccumulator {
     ///
     /// Convenience over [`update`](Self::update) using the same scale as
     /// [`raw_to_deg`].
-    pub fn update_raw(&mut self, raw: u16) -> f32 {
+    pub fn update_raw(&mut self, raw: u16) -> f64 {
         self.update(raw_to_deg(raw))
     }
 
     /// The continuous accumulated angle in degrees (`0.0` before the first
     /// sample). Positive is the direction the first motion went.
-    pub fn cumulative_deg(&self) -> f32 {
+    pub fn cumulative_deg(&self) -> f64 {
         self.cumulative
     }
 
     /// The accumulated angle expressed in whole and fractional revolutions
     /// (`cumulative_deg() / 360`).
-    pub fn revolutions(&self) -> f32 {
+    pub fn revolutions(&self) -> f64 {
         self.cumulative / 360.0
     }
 
