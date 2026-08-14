@@ -137,9 +137,15 @@ impl std::fmt::Debug for SerialTransport {
 }
 
 impl Transport for SerialTransport {
+    /// Deliberately no `flush()`: on a USB adapter `tcdrain` blocks for the
+    /// adapter's status-poll granularity (measured 2–4 ms per frame on
+    /// FT232R — several times the 0.87 ms the frame spends on the wire),
+    /// which is what used to push a 4-drive cycle past the 50 Hz budget.
+    /// The kernel serializes the write at wire speed on its own; keeping
+    /// the *next* frame clear of this one is the bus's job, which paces by
+    /// `frame_time() + min_gap` from write-return ([`super::bus`]).
     fn send(&mut self, data: &[u8]) -> Result<()> {
         self.port.write_all(data)?;
-        self.port.flush()?;
         Ok(())
     }
 
@@ -156,8 +162,11 @@ impl Transport for SerialTransport {
             .clear(ClearBuffer::Input)
             .map_err(|e| self.serial_err(e))?;
         self.port.write_all(data)?;
-        self.port.flush()?;
-        std::thread::sleep(wait);
+        // No `tcdrain` (see `send`): instead the wire time of the frame
+        // itself is added to the sleep, so `wait` keeps meaning "reply
+        // window measured from the end of our TX".
+        let wire = Duration::from_secs_f64(data.len() as f64 * 10.0 / f64::from(BAUD));
+        std::thread::sleep(wire + wait);
 
         let n = self.port.bytes_to_read().map_err(|e| self.serial_err(e))? as usize;
         let mut buf = vec![0u8; n];
