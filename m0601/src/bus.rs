@@ -63,6 +63,56 @@ const SAFE_STOP_ACCEL: u8 = 5;
 /// [`Bus::with_min_gap`].
 pub const DEFAULT_MIN_GAP: Duration = Duration::from_micros(2500);
 
+/// Default acceleration byte for [`M0601::drive_velocity`] — the motor's
+/// *fastest* ramp. Override the default per handle with
+/// [`M0601::with_default_accel`], or per call with
+/// [`M0601::drive_velocity_accel`].
+pub const DEFAULT_DRIVE_ACCEL: u8 = 1;
+
+/// Tunable bus-wide timing and stop behavior for one physical bus.
+///
+/// Every field defaults to the value the crate has always used
+/// ([`BusTiming::default`]), so a bus left unconfigured behaves exactly as
+/// before. Override what you need — wholesale with [`Bus::with_timing`], or
+/// one field at a time with the matching builder ([`Bus::with_stop_accel`],
+/// [`Bus::with_min_gap`]). Like the idle gap, this lives on the **shared**
+/// bus, not per handle: set it once at open time and every motor minted from
+/// the bus sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusTiming {
+    /// Minimum idle time enforced between consecutive frames on the wire, so
+    /// no frame overlaps the reply the previous one elicited.
+    pub min_gap: Duration,
+    /// Acceleration byte for the velocity-0 rounds of a controlled stop.
+    /// **Not** the fastest ramp (`1`): a hard ramp-to-zero on a loaded wheel
+    /// can trip the motor's 3 A protection mid-stop and defeat the stop.
+    pub stop_accel: u8,
+    /// Gap between the rounds of a [`M0601::safe_stop`] sequence.
+    pub stop_gap: Duration,
+    /// Gap between the five repetitions of a mode-switch frame.
+    pub mode_repeat_gap: Duration,
+    /// Gap between the five repetitions of a set-ID frame.
+    pub set_id_repeat_gap: Duration,
+    /// Settling time after the set-ID sequence before re-querying.
+    pub set_id_settle: Duration,
+    /// How long to listen for answers to a broadcast ID query.
+    pub broadcast_wait: Duration,
+}
+
+impl Default for BusTiming {
+    fn default() -> Self {
+        Self {
+            min_gap: DEFAULT_MIN_GAP,
+            stop_accel: SAFE_STOP_ACCEL,
+            stop_gap: SAFE_STOP_GAP,
+            mode_repeat_gap: MODE_REPEAT_GAP,
+            set_id_repeat_gap: SET_ID_REPEAT_GAP,
+            set_id_settle: SET_ID_SETTLE,
+            broadcast_wait: BROADCAST_WAIT,
+        }
+    }
+}
+
 /// The minimum wall-clock a bus needs for one round of `n_drives`
 /// fire-and-forget drive frames plus `n_polls` read exchanges, given the
 /// enforced idle `min_gap` after every frame and the `reply_wait` each poll
@@ -115,8 +165,9 @@ struct Port<T> {
     transport: T,
     /// When the last transmitting operation completed.
     last_tx: Option<Instant>,
-    /// Minimum bus-idle time between that and the next TX.
-    min_gap: Duration,
+    /// Tunable timing shared across every handle on this bus (idle gap, stop
+    /// ramp, mode/set-ID/broadcast waits).
+    timing: BusTiming,
 }
 
 impl<T: Transport> Port<T> {
@@ -134,9 +185,9 @@ impl<T: Transport> Port<T> {
     /// overrun.
     fn gap_remaining(&self) -> Duration {
         match self.last_tx {
-            Some(at) => self
-                .transport
-                .pace((crate::protocol::frame_time() + self.min_gap).saturating_sub(at.elapsed())),
+            Some(at) => self.transport.pace(
+                (crate::protocol::frame_time() + self.timing.min_gap).saturating_sub(at.elapsed()),
+            ),
             None => Duration::ZERO,
         }
     }
@@ -212,15 +263,21 @@ fn stop_all<T: Transport>(port: &Mutex<Port<T>>, ids: &[u8]) {
     if ids.is_empty() {
         return;
     }
+    // Snapshot the configurable stop ramp/gap once (BusTiming is Copy).
+    let BusTiming {
+        stop_accel,
+        stop_gap,
+        ..
+    } = lock(port).timing;
     let mut deadline = Instant::now();
     for step in 0..15u8 {
-        deadline += SAFE_STOP_GAP;
+        deadline += stop_gap;
         let _ = send_round(
             port,
             ids,
             |id| match step {
                 0..=4 => frame_mode(id, Mode::Velocity),
-                5..=9 => frame_velocity(id, 0, SAFE_STOP_ACCEL),
+                5..=9 => frame_velocity(id, 0, stop_accel),
                 _ => frame_brake(id),
             },
             deadline,
@@ -235,9 +292,10 @@ fn mode_all<T: Transport>(port: &Mutex<Port<T>>, ids: &[u8], mode: Mode) -> Resu
     if ids.is_empty() {
         return Ok(());
     }
+    let mode_repeat_gap = lock(port).timing.mode_repeat_gap;
     let mut deadline = Instant::now();
     for _ in 0..5 {
-        deadline += MODE_REPEAT_GAP;
+        deadline += mode_repeat_gap;
         send_round(port, ids, |id| frame_mode(id, mode), deadline)?;
     }
     Ok(())
@@ -308,6 +366,9 @@ pub struct Bus<T: Transport = SerialTransport> {
     /// Propagated to every [`M0601`] minted from this bus — see
     /// [`with_strict_crc`](Self::with_strict_crc).
     strict_crc: bool,
+    /// Default velocity-drive accel propagated to every [`M0601`] minted from
+    /// this bus — see [`with_default_accel`](Self::with_default_accel).
+    default_accel: u8,
 }
 
 // Manual impl: buses are cheap to clone regardless of whether T is Clone —
@@ -320,6 +381,7 @@ impl<T: Transport> Clone for Bus<T> {
             port: Arc::clone(&self.port),
             timeout: self.timeout,
             strict_crc: self.strict_crc,
+            default_accel: self.default_accel,
         }
     }
 }
@@ -331,8 +393,8 @@ impl<T: Transport> Clone for Bus<T> {
 /// yields the value — the crate is poison-tolerant everywhere else too.
 fn peek_min_gap<T: Transport>(port: &Mutex<Port<T>>) -> Option<Duration> {
     match port.try_lock() {
-        Ok(p) => Some(p.min_gap),
-        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner().min_gap),
+        Ok(p) => Some(p.timing.min_gap),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner().timing.min_gap),
         Err(std::sync::TryLockError::WouldBlock) => None,
     }
 }
@@ -345,6 +407,7 @@ impl<T: Transport> std::fmt::Debug for Bus<T> {
         f.debug_struct("Bus")
             .field("timeout", &self.timeout)
             .field("strict_crc", &self.strict_crc)
+            .field("default_accel", &self.default_accel)
             .field("min_gap", &peek_min_gap(&self.port))
             .finish_non_exhaustive()
     }
@@ -370,10 +433,11 @@ impl<T: Transport> Bus<T> {
             port: Arc::new(Mutex::new(Port {
                 transport,
                 last_tx: None,
-                min_gap: DEFAULT_MIN_GAP,
+                timing: BusTiming::default(),
             })),
             timeout,
             strict_crc: false,
+            default_accel: DEFAULT_DRIVE_ACCEL,
         }
     }
 
@@ -406,14 +470,45 @@ impl<T: Transport> Bus<T> {
     /// the bus enforces it here.
     #[must_use]
     pub fn with_min_gap(self, gap: Duration) -> Self {
-        lock(&self.port).min_gap = gap;
+        lock(&self.port).timing.min_gap = gap;
         self
     }
 
     /// The enforced minimum idle gap between frames
     /// ([`with_min_gap`](Self::with_min_gap)).
     pub fn min_gap(&self) -> Duration {
-        lock(&self.port).min_gap
+        lock(&self.port).timing.min_gap
+    }
+
+    /// Replace the whole [`BusTiming`] for this bus (idle gap, stop ramp,
+    /// mode/set-ID/broadcast waits) in one call — the from-config entry point.
+    ///
+    /// Like [`with_min_gap`](Self::with_min_gap), the timing lives on the
+    /// shared port: it applies to every clone and every motor handle on the
+    /// same bus, so set it once at open time. Individual builders
+    /// ([`with_stop_accel`](Self::with_stop_accel),
+    /// [`with_min_gap`](Self::with_min_gap)) tweak one field of it.
+    #[must_use]
+    pub fn with_timing(self, timing: BusTiming) -> Self {
+        lock(&self.port).timing = timing;
+        self
+    }
+
+    /// The acceleration byte used for the velocity-0 rounds of a controlled
+    /// stop ([`M0601::safe_stop`] / [`safe_stop_all`](Self::safe_stop_all)).
+    ///
+    /// Shared-port builder, exactly like [`with_min_gap`](Self::with_min_gap).
+    /// Defaults to a moderate ramp (see [`BusTiming`]); a hard ramp (`1`) on a
+    /// loaded wheel can trip the motor's overcurrent protection mid-stop.
+    #[must_use]
+    pub fn with_stop_accel(self, accel: u8) -> Self {
+        lock(&self.port).timing.stop_accel = accel;
+        self
+    }
+
+    /// The current [`BusTiming`] for this bus.
+    pub fn timing(&self) -> BusTiming {
+        lock(&self.port).timing
     }
 
     /// Opt into **strict CRC** for every motor minted from this bus: a
@@ -446,6 +541,26 @@ impl<T: Transport> Bus<T> {
         self.strict_crc
     }
 
+    /// The default acceleration byte for [`M0601::drive_velocity`] on every
+    /// motor minted from this bus.
+    ///
+    /// Like [`with_strict_crc`](Self::with_strict_crc) this is a per-handle
+    /// setting, copied into each [`M0601`] at [`motor`](Self::motor) time; a
+    /// motor's own [`M0601::with_default_accel`] overrides it. Defaults to
+    /// [`DEFAULT_DRIVE_ACCEL`]. The per-call [`M0601::drive_velocity_accel`]
+    /// always wins over both.
+    #[must_use]
+    pub fn with_default_accel(mut self, accel: u8) -> Self {
+        self.default_accel = accel;
+        self
+    }
+
+    /// The default velocity-drive accel for motors minted from this bus
+    /// ([`with_default_accel`](Self::with_default_accel)).
+    pub fn default_accel(&self) -> u8 {
+        self.default_accel
+    }
+
     /// A driver handle for the motor at `id` (validated: `0x01..=0xFE`).
     ///
     /// Handles keep the underlying transport alive; the `Bus` itself may be
@@ -458,6 +573,7 @@ impl<T: Transport> Bus<T> {
             timeout: self.timeout,
             mirrored: false,
             strict_crc: self.strict_crc,
+            default_accel: self.default_accel,
         })
     }
 
@@ -525,8 +641,9 @@ impl<T: Transport> Bus<T> {
         // that, because "the bus answered with garbage" (motors colliding)
         // and "the bus is silent" (no motors) demand opposite responses
         // from the caller.
+        let broadcast_wait = self.timing().broadcast_wait;
         let query = frame_id_query();
-        let resp = with_gap(&self.port, |t| t.send_recv(&query, BROADCAST_WAIT))?;
+        let resp = with_gap(&self.port, |t| t.send_recv(&query, broadcast_wait))?;
         let payload = resp.strip_prefix(query.as_slice()).unwrap_or(&resp);
         let mut garbled = false;
         match frames(&query, &resp) {
@@ -584,14 +701,15 @@ impl<T: Transport> Bus<T> {
     /// [`scan(0x01..=0xFE, …)`](Self::scan) beforehand, since a stage-1 scan
     /// cannot distinguish one motor from several answering at once.
     pub fn set_id(&self, new_id: u8) -> Result<Option<u8>> {
+        let timing = self.timing();
         let frame = frame_set_id(new_id)?;
         for _ in 0..5 {
-            self.send_paced(&frame, SET_ID_REPEAT_GAP)?;
+            self.send_paced(&frame, timing.set_id_repeat_gap)?;
         }
-        self.pause(SET_ID_SETTLE);
+        self.pause(timing.set_id_settle);
 
         let query = frame_id_query();
-        let resp = with_gap(&self.port, |t| t.send_recv(&query, BROADCAST_WAIT))?;
+        let resp = with_gap(&self.port, |t| t.send_recv(&query, timing.broadcast_wait))?;
         Ok(frames(&query, &resp)
             .into_iter()
             .flatten()
@@ -715,6 +833,9 @@ pub struct M0601<T: Transport = SerialTransport> {
     /// Reject CRC-failing telemetry rather than returning it advisory — see
     /// [`with_strict_crc`](Self::with_strict_crc).
     strict_crc: bool,
+    /// Default accel byte for [`drive_velocity`](Self::drive_velocity) — see
+    /// [`with_default_accel`](Self::with_default_accel).
+    default_accel: u8,
 }
 
 // Manual impl: handles are cheap to clone regardless of whether T is Clone.
@@ -726,6 +847,7 @@ impl<T: Transport> Clone for M0601<T> {
             timeout: self.timeout,
             mirrored: self.mirrored,
             strict_crc: self.strict_crc,
+            default_accel: self.default_accel,
         }
     }
 }
@@ -740,6 +862,7 @@ impl<T: Transport> std::fmt::Debug for M0601<T> {
             .field("timeout", &self.timeout)
             .field("mirrored", &self.mirrored)
             .field("strict_crc", &self.strict_crc)
+            .field("default_accel", &self.default_accel)
             .field("min_gap", &peek_min_gap(&self.port))
             .finish_non_exhaustive()
     }
@@ -802,6 +925,32 @@ impl<T: Transport> M0601<T> {
     /// ([`with_strict_crc`](Self::with_strict_crc)).
     pub fn strict_crc(&self) -> bool {
         self.strict_crc
+    }
+
+    /// Set the default acceleration byte used by
+    /// [`drive_velocity`](Self::drive_velocity) on this handle.
+    ///
+    /// Builder-style. Motors minted from a [`Bus`] inherit the bus-wide
+    /// default ([`Bus::with_default_accel`]); this overrides it for one
+    /// handle. The per-call [`drive_velocity_accel`](Self::drive_velocity_accel)
+    /// always takes precedence. Defaults to [`DEFAULT_DRIVE_ACCEL`] (the
+    /// motor's fastest ramp).
+    #[must_use]
+    pub fn with_default_accel(mut self, accel: u8) -> Self {
+        self.default_accel = accel;
+        self
+    }
+
+    /// Set the default velocity-drive accel on an existing handle in place —
+    /// the setter form of [`with_default_accel`](Self::with_default_accel).
+    pub fn set_default_accel(&mut self, accel: u8) {
+        self.default_accel = accel;
+    }
+
+    /// This handle's default velocity-drive accel
+    /// ([`with_default_accel`](Self::with_default_accel)).
+    pub fn default_accel(&self) -> u8 {
+        self.default_accel
     }
 
     /// The motor ID this handle addresses.
@@ -953,14 +1102,17 @@ impl<T: Transport> M0601<T> {
         mode_all(&self.port, &[self.id], mode)
     }
 
-    /// Send one velocity drive frame (clamped to ±330 RPM, accel 1); a
-    /// mirrored handle negates `rpm` first.
+    /// Send one velocity drive frame (clamped to ±330 RPM); a mirrored handle
+    /// negates `rpm` first.
     /// Must be resent at ≥50 Hz to sustain motion — see the type-level docs.
     ///
-    /// Use [`drive_velocity_accel`](Self::drive_velocity_accel) to soften
-    /// the default accel of 1, which is the motor's *fastest* ramp.
+    /// Uses this handle's default accel — [`DEFAULT_DRIVE_ACCEL`] (the motor's
+    /// *fastest* ramp) unless changed with
+    /// [`with_default_accel`](Self::with_default_accel) /
+    /// [`Bus::with_default_accel`]. Pass an explicit ramp per call with
+    /// [`drive_velocity_accel`](Self::drive_velocity_accel).
     pub fn drive_velocity(&mut self, rpm: i16) -> Result<()> {
-        self.drive_velocity_accel(rpm, 1)
+        self.drive_velocity_accel(rpm, self.default_accel)
     }
 
     /// Send one velocity drive frame with an explicit acceleration.

@@ -9,7 +9,7 @@ use m0601::protocol::{
     ReplyKind, frame_brake, frame_feedback, frame_from_bytes, frame_id_query, frame_mode,
     frame_velocity,
 };
-use m0601::{Bus, Error, M0601, MockTransport, Mode};
+use m0601::{Bus, BusTiming, Error, M0601, MockTransport, Mode};
 
 const TIMEOUT: Duration = Duration::from_millis(150);
 
@@ -1038,4 +1038,82 @@ fn a_cloned_bus_is_another_handle_on_the_same_port() {
     drop(guard);
     let mock = bus.into_transport().expect("last handle");
     assert_eq!(mock.sent.len(), 15, "the clone's frames reached the port");
+}
+
+// ── Configurable timing / drive defaults ──
+
+#[test]
+fn default_bus_timing_matches_the_historical_constants() {
+    // The whole change hinges on defaults being unchanged. Pin the two a
+    // consumer is most likely to read, and that other tests depend on.
+    let t = BusTiming::default();
+    assert_eq!(t.stop_accel, 5, "stop ramp default must stay 5");
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
+    assert_eq!(bus.timing(), t, "a fresh bus carries the default timing");
+    assert_eq!(
+        bus.default_accel(),
+        1,
+        "drive_velocity default accel stays 1"
+    );
+}
+
+#[test]
+fn with_stop_accel_reaches_the_stop_frames() {
+    // Override the stop ramp and confirm it is what actually goes on the
+    // wire in the velocity-0 rounds — not just stored.
+    let mut m = {
+        let bus = Bus::with_transport(MockTransport::default(), TIMEOUT).with_stop_accel(1);
+        bus.motor(0x01).expect("valid id")
+    };
+    m.safe_stop();
+    let mock = m.into_transport().expect("sole handle");
+    // accel byte 6 = 0x01 now, with the matching CRC (the historical value).
+    let zero = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFB];
+    assert!(
+        mock.sent[5..10].iter().all(|f| *f == zero),
+        "velocity-0 rounds must carry the configured stop accel"
+    );
+}
+
+#[test]
+fn with_timing_sets_the_whole_struct_and_is_read_back() {
+    let timing = BusTiming {
+        stop_accel: 9,
+        ..BusTiming::default()
+    };
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT).with_timing(timing);
+    assert_eq!(bus.timing(), timing);
+    // And it propagates to a minted motor's stop (shared port).
+    let mut m = bus.motor(0x01).expect("valid id");
+    drop(bus);
+    m.safe_stop();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent[5][6], 9, "stop accel byte follows with_timing");
+}
+
+#[test]
+fn with_default_accel_changes_drive_velocity() {
+    // Bus-wide default is inherited at motor() time; drive_velocity uses it.
+    let mut m = {
+        let bus = Bus::with_transport(MockTransport::default(), TIMEOUT).with_default_accel(5);
+        bus.motor(0x01).expect("valid id")
+    };
+    m.drive_velocity(100).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(
+        mock.sent[0],
+        frame_velocity(0x01, 100, 5).to_vec(),
+        "drive_velocity must use the configured default accel"
+    );
+}
+
+#[test]
+fn per_handle_default_accel_overrides_the_bus_default() {
+    let bus = Bus::with_transport(MockTransport::default(), TIMEOUT).with_default_accel(3);
+    let mut m = bus.motor(0x01).expect("valid id").with_default_accel(7);
+    drop(bus);
+    assert_eq!(m.default_accel(), 7);
+    m.drive_velocity(100).unwrap();
+    let mock = m.into_transport().expect("sole handle");
+    assert_eq!(mock.sent[0], frame_velocity(0x01, 100, 7).to_vec());
 }

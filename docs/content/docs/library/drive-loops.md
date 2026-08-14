@@ -55,14 +55,22 @@ stopped arriving. Worst case, the fail-safe still catches it.
 
 ## Acceleration, and the current spike
 
-`drive_velocity` uses acceleration `1` — which is the motor's *fastest* ramp, not a
-gentle one. On a loaded wheel a large velocity step at accel 1 can draw a current
-spike big enough to trip the 3 A bus-overcurrent protection, which drops the wheel
-until it auto-resets ~5 s later. If you see that, use the explicit form and ramp
-softer:
+`drive_velocity` uses acceleration `1` by default — which is the motor's *fastest*
+ramp, not a gentle one. On a loaded wheel a large velocity step at accel 1 can draw a
+current spike big enough to trip the 3 A bus-overcurrent protection, which drops the
+wheel until it auto-resets ~5 s later. If you see that, ramp softer. Per call:
 
 ```rust
 motor.drive_velocity_accel(200, 40)?;   // larger accel byte = gentler ramp; 0 = motor default
+```
+
+Or change the default `drive_velocity` uses, once, so ordinary calls ramp gently — on
+the whole bus or one handle:
+
+```rust
+let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_default_accel(10); // every motor
+let mut motor = bus.motor(0x01)?.with_default_accel(20);              // just this one
+motor.drive_velocity(200)?;   // now uses accel 20; drive_velocity_accel still overrides
 ```
 
 (The vendor docs give this byte a unit that reads like a rate, which contradicts the

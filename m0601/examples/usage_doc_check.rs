@@ -73,6 +73,20 @@ fn multi_motor_example() -> m0601::Result<()> {
     Ok(())
 }
 
+fn timing_example() -> m0601::Result<()> {
+    // Tunable bus timing (idle gap, stop ramp, mode/set-ID/broadcast waits)
+    // and drive-accel defaults — set from your own config, defaults unchanged.
+    let bus = Bus::open("/dev/ttyUSB0", Duration::from_millis(150))?
+        .with_timing(m0601::BusTiming {
+            stop_accel: 5,
+            ..m0601::BusTiming::default()
+        })
+        .with_default_accel(10); // every motor's drive_velocity default
+    let mut motor = bus.motor(0x01)?.with_default_accel(20); // just this one
+    motor.drive_velocity(200)?; // uses accel 20
+    Ok(())
+}
+
 fn low_latency_example() -> m0601::Result<()> {
     let transport = m0601::SerialTransport::open("/dev/ttyUSB0", Duration::from_millis(150))?;
     if !transport.low_latency() {

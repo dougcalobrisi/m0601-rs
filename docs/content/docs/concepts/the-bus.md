@@ -44,6 +44,12 @@ A few properties of that gap worth internalizing:
 - **Tuning it down is a hardware claim.** A smaller gap says "this adapter and this
   motor turn around faster than 2.5 ms," which you should verify before you rely on.
 
+The idle gap is one field of `BusTiming`, the bus's tunable timing — alongside the stop
+ramp and the mode/set-ID/broadcast waits. Every field defaults to the value the crate
+has always used, and all of them live on the shared port the same way the gap does. Set
+them individually (`with_min_gap`, `with_stop_accel`) or all at once from your own
+config with `Bus::with_timing(BusTiming { .. })`.
+
 ## Addressing, and why collisions look like garbage
 
 Motors ship at `0x01`, and you assign the rest one at a time with [`set-id`]({{<

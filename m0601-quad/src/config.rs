@@ -193,6 +193,18 @@ impl Config {
         ms(self.limits.dead_ms).unwrap_or(Duration::from_millis(1500))
     }
 
+    /// The library [`m0601::BusTiming`] this config asks for: the enforced
+    /// idle gap plus a controlled-stop ramp that matches the configured launch
+    /// accel (`limits.accel`), so a wheel decelerates on the same ramp it
+    /// launches on. Everything else keeps the library defaults.
+    pub fn bus_timing(&self) -> m0601::BusTiming {
+        m0601::BusTiming {
+            min_gap: self.min_gap(),
+            stop_accel: self.limits.accel,
+            ..m0601::BusTiming::default()
+        }
+    }
+
     /// Wheels in dashboard order: front-left, front-right, rear-left,
     /// rear-right. Valid only after `validate` passed (each corner once).
     pub fn wheels_in_grid_order(&self) -> Vec<&WheelCfg> {
@@ -387,6 +399,21 @@ mod tests {
         // And it records the physical map from the wheels.toml grid.
         let order: Vec<u8> = cfg.wheels_in_grid_order().iter().map(|w| w.id).collect();
         assert_eq!(order, [0x03, 0x04, 0x01, 0x02], "FL, FR, RL, RR");
+    }
+
+    #[test]
+    fn bus_timing_maps_launch_accel_and_min_gap() {
+        let cfg = parsed(SHIPPED);
+        let t = cfg.bus_timing();
+        assert_eq!(
+            t.stop_accel, cfg.limits.accel,
+            "the stop ramp must track the configured launch accel"
+        );
+        assert_eq!(t.min_gap, cfg.min_gap());
+        // Everything else keeps the library default.
+        let d = m0601::BusTiming::default();
+        assert_eq!(t.broadcast_wait, d.broadcast_wait);
+        assert_eq!(t.stop_gap, d.stop_gap);
     }
 
     #[test]

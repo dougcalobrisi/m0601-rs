@@ -23,11 +23,34 @@ mode first, then sends zero, then brakes. Force the one mode where zero means st
 and the sequence is correct no matter what the motor was doing when things went wrong.
 
 The full sequence is five velocity-mode switch frames, then five zero-velocity frames,
-then five brake frames, 20 ms apart — about 300 ms. It's a step to zero at the motor's
-fastest setting followed by the electric brake, not a gentle ramp. And it's
-best-effort: it swallows every I/O error and keeps sending, because even total failure
-is safe. If not one frame gets through, the wheel still coasts to a stop, because the
-frames stopped arriving. The fail-safe is the floor under everything.
+then five brake frames, 20 ms apart — about 300 ms. The ramp to zero uses a *moderate*
+acceleration by default (not the motor's fastest setting), so a hard step-to-zero on a
+loaded wheel can't trip the 3 A overcurrent protection part-way through the stop and
+leave it half-done; the electric brake rounds that follow still deliver the firm final
+hold. You can change that ramp — see [tuning the stop](#tuning-the-stop-ramp) below. And
+it's best-effort: it swallows every I/O error and keeps sending, because even total
+failure is safe. If not one frame gets through, the wheel still coasts to a stop,
+because the frames stopped arriving. The fail-safe is the floor under everything.
+
+### Tuning the stop ramp
+
+The stop ramp, the 20 ms round gap, and the mode/set-ID/broadcast waits are all fields
+of `BusTiming`, set once on the bus (they default to the values above, so an
+unconfigured bus behaves exactly as described):
+
+```rust
+use m0601::{Bus, BusTiming};
+
+// One field at a time…
+let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_stop_accel(3);
+
+// …or the whole struct, e.g. straight from your own config.
+let bus = Bus::open("/dev/ttyUSB0", timeout)?
+    .with_timing(BusTiming { stop_accel: 3, ..BusTiming::default() });
+```
+
+Like the idle gap, the timing lives on the shared bus: set it at open time and every
+motor handle you mint from the bus uses it.
 
 ## Stopping a whole vehicle without yawing
 

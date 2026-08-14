@@ -26,7 +26,9 @@ pub struct Rover {
 pub fn open(cfg: &Config) -> m0601::Result<Rover> {
     let transport = m0601::SerialTransport::open(&cfg.bus.port, OPEN_TIMEOUT)?;
     let low_latency = transport.low_latency();
-    let bus = Bus::with_transport(transport, OPEN_TIMEOUT).with_min_gap(cfg.min_gap());
+    // One shared timing for the bus: the idle gap plus a stop ramp that
+    // matches the configured launch accel (see `Config::bus_timing`).
+    let bus = Bus::with_transport(transport, OPEN_TIMEOUT).with_timing(cfg.bus_timing());
 
     let mut wheels = Vec::new();
     let mut ids = Vec::new();

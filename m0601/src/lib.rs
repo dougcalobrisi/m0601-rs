@@ -181,7 +181,9 @@ pub mod protocol;
 pub mod transport;
 pub mod types;
 
-pub use bus::{Bus, DEFAULT_MIN_GAP, M0601, ScanReport, bus_period};
+pub use bus::{
+    Bus, BusTiming, DEFAULT_DRIVE_ACCEL, DEFAULT_MIN_GAP, M0601, ScanReport, bus_period,
+};
 pub use error::{Error, Result};
 pub use protocol::{ReplyKind, drive_floor, frame_time};
 pub use transport::{MockTransport, SerialTransport, Transport};

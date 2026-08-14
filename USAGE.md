@@ -288,10 +288,12 @@ panic/signal handlers — it swallows I/O errors precisely so it can run
 there). If your process dies anyway, the motor coasts to a stop on its
 own once frames stop arriving.
 
-`drive_velocity` uses acceleration `1` — the motor's **fastest** ramp. A
-big step at accel 1 on a loaded wheel can spike current into the 3 A
+`drive_velocity` uses acceleration `1` by default — the motor's **fastest**
+ramp. A big step at accel 1 on a loaded wheel can spike current into the 3 A
 protection; use `drive_velocity_accel(rpm, accel)` with a larger value
-(larger = gentler; `0` = motor default) to ramp gently.
+(larger = gentler; `0` = motor default) to ramp gently for one call, or
+change the default `drive_velocity` uses with `Bus::with_default_accel(n)`
+(whole bus) or `motor.with_default_accel(n)` (one handle).
 
 ### Telemetry while driving — the two reply layouts
 
@@ -377,6 +379,25 @@ threads: two threads *can* each drive their own wheel — but prefer one
 scheduler thread that owns all sends when cycle timing matters, because
 the gap only guarantees frames don't collide, not that they leave on
 schedule.
+
+The idle gap is one field of **`BusTiming`**, the bus's tunable timing —
+along with the safe-stop ramp (`stop_accel`) and gap, and the
+mode-switch / set-ID / broadcast waits. Every field defaults to the value
+the crate has always used, so an unconfigured bus is unchanged. Set one
+field with the matching builder (`with_min_gap`, `with_stop_accel`) or the
+whole struct straight from your own config:
+
+```rust
+use m0601::{Bus, BusTiming};
+
+let bus = Bus::open("/dev/ttyUSB0", timeout)?
+    .with_timing(BusTiming { stop_accel: 5, ..BusTiming::default() });
+```
+
+Like the gap, the timing lives on the shared port — set it once at open
+time and every motor handle minted from the bus uses it. (`m0601-quad`
+does exactly this: its `Config::bus_timing()` feeds `limits.accel` into
+`stop_accel`, so a wheel decelerates on the same ramp it launches on.)
 
 **Budgeting more than two motors:** each motor must see *its* drive frame
 at ≥50 Hz, so N motors need ≥N×50 frames/s through one bus, plus their
