@@ -165,6 +165,15 @@ impl Config {
         }
     }
 
+    // Timing accessors. The `unwrap_or` fallbacks are **only** reachable for
+    // values `ms()` cannot represent — non-finite, negative, or too large
+    // for `Duration` — and `validate()` (below) rejects every one of those
+    // for every timing field. So on the sole shipped call path (`load` →
+    // `validate` → pilot) they never fire, and a merely-wrong-but-valid
+    // value is used as written rather than masked. Callers that `parse()`
+    // without `validate()` (some unit tests) are the only ones that can
+    // observe a fallback; treat these literals as a last-resort library
+    // default, not the operator's tuning.
     pub fn cycle(&self) -> Duration {
         ms(self.bus.cycle_ms).unwrap_or(Duration::from_millis(18))
     }
@@ -213,10 +222,19 @@ impl Config {
             // a naive Duration conversion. Negatives parse but would
             // otherwise silently fall back to defaults in the accessors —
             // reject them here so a mistyped config cannot masquerade as
-            // a tuned one.
+            // a tuned one. A *finite, non-negative but too-large* value is
+            // the same hazard: `ms()` (Duration::try_from_secs_f64) returns
+            // `None` when it overflows `Duration`, so reject anything `ms()`
+            // cannot represent — this is what makes the accessor fallbacks
+            // unreachable on the validated path for EVERY timing field, not
+            // just `cycle_ms`.
             if !v.is_finite() || v < 0.0 {
                 e.push(format!(
                     "{label} must be a finite, non-negative number (got {v})"
+                ));
+            } else if ms(v).is_none() {
+                e.push(format!(
+                    "{label} = {v} is too large to represent as a duration"
                 ));
             }
         }
@@ -369,6 +387,22 @@ mod tests {
         // And it records the physical map from the wheels.toml grid.
         let order: Vec<u8> = cfg.wheels_in_grid_order().iter().map(|w| w.id).collect();
         assert_eq!(order, [0x03, 0x04, 0x01, 0x02], "FL, FR, RL, RR");
+    }
+
+    #[test]
+    fn an_unrepresentably_large_timing_value_is_rejected_not_defaulted() {
+        // A huge-but-finite value passes the finite/non-negative check but
+        // overflows Duration in ms(), so the timing-fit check would skip it
+        // and the accessor would silently fall back to a default. validate
+        // must reject it outright.
+        let text = SHIPPED.replace("min_gap_ms = 2.0", "min_gap_ms = 1e308");
+        let errors = parsed(&text).validate().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("min_gap_ms") && e.contains("too large")),
+            "expected a too-large rejection, got {errors:#?}"
+        );
     }
 
     #[test]

@@ -97,6 +97,26 @@ impl Drop for StopGuard {
     }
 }
 
+/// Absolute stop deadline for a timed run.
+///
+/// `None` (no `--secs`) means "run until Ctrl-C". A *present* `--secs` fails
+/// **closed** — an immediate deadline of `start`, so the loop stops on its
+/// first cycle — for anything that cannot become a real future instant:
+/// a value `try_from_secs_f64` rejects (non-finite/negative), OR a huge
+/// finite value that converts but overflows `Instant` when added (which
+/// would otherwise *panic*). Never "run forever" on a bad duration.
+/// `parse_seconds` bars such values today; this keeps the fail-direction
+/// safe if that validation is ever loosened or another caller constructs
+/// `Plan` directly.
+fn run_deadline(start: Instant, secs: Option<f64>) -> Option<Instant> {
+    secs.map(|s| {
+        Duration::try_from_secs_f64(s)
+            .ok()
+            .and_then(|d| start.checked_add(d))
+            .unwrap_or(start)
+    })
+}
+
 pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<ExitCode> {
     let mode = mode_of(&plan.setpoint);
     let mut motor = M0601::open(port, id, timeout)?;
@@ -144,10 +164,7 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
     describe(&plan, mode);
 
     let start = Instant::now();
-    let deadline = plan
-        .secs
-        .and_then(|s| Duration::try_from_secs_f64(s).ok())
-        .map(|d| start + d);
+    let deadline = run_deadline(start, plan.secs);
 
     let mut last_fb: Option<Feedback> = None;
     let mut last_temp: Option<u8> = None;
@@ -240,10 +257,31 @@ fn print_status(fb: &Feedback, temp: Option<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CYCLE, Setpoint, drive_frame, mode_of};
+    use super::{CYCLE, Setpoint, drive_frame, mode_of, run_deadline};
     use m0601::Mode;
     use m0601::protocol::DRIVE_HZ_MIN;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_bad_secs_fails_closed_to_an_immediate_stop() {
+        let start = Instant::now();
+        // No --secs: run until Ctrl-C.
+        assert_eq!(run_deadline(start, None), None);
+        // Present but unconvertible: stop immediately (deadline == start),
+        // never "run forever". This is the safety-relevant fail direction.
+        assert_eq!(run_deadline(start, Some(f64::INFINITY)), Some(start));
+        assert_eq!(run_deadline(start, Some(f64::NAN)), Some(start));
+        assert_eq!(run_deadline(start, Some(-1.0)), Some(start));
+        // Too large to convert at all: fails closed to `start`.
+        assert_eq!(run_deadline(start, Some(f64::MAX)), Some(start));
+        // Large-but-convertible whose addition would overflow `Instant`:
+        // must NOT panic. checked_add maps overflow to `start` (or yields a
+        // real future instant where the platform can represent it) — either
+        // way, never "run forever" and never a panic.
+        assert!(run_deadline(start, Some(1e15)).is_some());
+        // A normal value produces a real future deadline.
+        assert!(run_deadline(start, Some(2.0)).is_some_and(|d| d > start));
+    }
 
     #[test]
     fn the_cycle_honours_the_protocol_drive_rate() {

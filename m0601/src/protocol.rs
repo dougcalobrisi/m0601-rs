@@ -492,9 +492,16 @@ pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
     let current_raw = i16::from_be_bytes([raw[2], raw[3]]);
     // The vendor sample and the navigation_robot C driver both decode the
     // drive-reply position as an unsigned 16-bit value (range 0..=32767).
+    // Clamp to `POS_MAX` so a corrupt reply with bit 15 set decodes to a
+    // valid 0..=360° angle rather than the up-to-~720° an unclamped u16
+    // would yield — telemetry stays inside its documented range even in the
+    // default advisory-CRC mode, where a bad frame is passed through.
     let (temp_c, position_deg) = match kind {
         ReplyKind::Query => (Some(raw[6]), raw8_to_deg(raw[7])),
-        ReplyKind::Drive => (None, raw_to_deg(u16::from_be_bytes([raw[6], raw[7]]))),
+        ReplyKind::Drive => (
+            None,
+            raw_to_deg(u16::from_be_bytes([raw[6], raw[7]]).min(POS_MAX)),
+        ),
     };
     Some(Feedback {
         id: raw[0],

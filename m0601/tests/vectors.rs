@@ -296,6 +296,25 @@ fn parse_feedback_drive_position_endpoints() {
     assert_eq!(fb.position_deg, 0.0);
 }
 
+#[test]
+fn parse_feedback_drive_position_clamps_out_of_range() {
+    // The drive-reply position is documented as 0..=32767. A corrupt frame
+    // with bit 15 set would decode, unclamped, to up to ~720°; the decoder
+    // clamps to POS_MAX so telemetry never leaves the 0..=360° range — even
+    // in the default advisory-CRC mode, which passes bad frames through.
+    for raw in [0x8000u16, 0xC000, 0xFFFF] {
+        let [hi, lo] = raw.to_be_bytes();
+        let frame = [0x01, 0x02, 0x00, 0x00, 0x00, 0x00, hi, lo, 0x00, 0x00];
+        let fb = parse_feedback(&frame, ReplyKind::Drive).unwrap();
+        assert!(
+            (0.0..=360.0).contains(&fb.position_deg),
+            "0x{raw:04X} decoded to {} deg, outside 0..=360",
+            fb.position_deg
+        );
+        assert_eq!(fb.position_deg, 360.0, "clamps to POS_MAX (a full turn)");
+    }
+}
+
 /// The reply layout is knowable only from the frame that elicited it; this
 /// pins the classification for every TX frame the crate can produce.
 #[test]
