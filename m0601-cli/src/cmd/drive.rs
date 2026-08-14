@@ -99,14 +99,22 @@ impl Drop for StopGuard {
 
 /// Absolute stop deadline for a timed run.
 ///
-/// `None` (no `--secs`) means "run until Ctrl-C". A *present* `--secs` that
-/// fails to convert to a `Duration` (non-finite/negative) fails **closed** —
-/// an immediate deadline of `start`, so the loop stops on its first cycle —
-/// rather than silently collapsing to "run forever". `parse_seconds` bars
-/// such values today; this keeps the fail-direction safe if that validation
-/// is ever loosened or another caller constructs `Plan` directly.
+/// `None` (no `--secs`) means "run until Ctrl-C". A *present* `--secs` fails
+/// **closed** — an immediate deadline of `start`, so the loop stops on its
+/// first cycle — for anything that cannot become a real future instant:
+/// a value `try_from_secs_f64` rejects (non-finite/negative), OR a huge
+/// finite value that converts but overflows `Instant` when added (which
+/// would otherwise *panic*). Never "run forever" on a bad duration.
+/// `parse_seconds` bars such values today; this keeps the fail-direction
+/// safe if that validation is ever loosened or another caller constructs
+/// `Plan` directly.
 fn run_deadline(start: Instant, secs: Option<f64>) -> Option<Instant> {
-    secs.map(|s| start + Duration::try_from_secs_f64(s).unwrap_or(Duration::ZERO))
+    secs.map(|s| {
+        Duration::try_from_secs_f64(s)
+            .ok()
+            .and_then(|d| start.checked_add(d))
+            .unwrap_or(start)
+    })
 }
 
 pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<ExitCode> {
@@ -264,7 +272,14 @@ mod tests {
         assert_eq!(run_deadline(start, Some(f64::INFINITY)), Some(start));
         assert_eq!(run_deadline(start, Some(f64::NAN)), Some(start));
         assert_eq!(run_deadline(start, Some(-1.0)), Some(start));
-        // A good value produces a real future deadline.
+        // Too large to convert at all: fails closed to `start`.
+        assert_eq!(run_deadline(start, Some(f64::MAX)), Some(start));
+        // Large-but-convertible whose addition would overflow `Instant`:
+        // must NOT panic. checked_add maps overflow to `start` (or yields a
+        // real future instant where the platform can represent it) — either
+        // way, never "run forever" and never a panic.
+        assert!(run_deadline(start, Some(1e15)).is_some());
+        // A normal value produces a real future deadline.
         assert!(run_deadline(start, Some(2.0)).is_some_and(|d| d > start));
     }
 
