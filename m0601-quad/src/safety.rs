@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn one_missed_poll_is_not_a_fail_stop() {
-        // Round-robin polls one wheel per cycle, so ~72 ms between a
+        // Round-robin polls one wheel every 8th cycle, so ~144 ms between a
         // wheel's polls is normal and one miss doubles it — still well
         // under stale_ms. This is why stale warns instead of stopping.
         let now = Instant::now();

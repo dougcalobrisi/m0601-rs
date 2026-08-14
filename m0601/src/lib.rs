@@ -85,8 +85,10 @@
 //! [`Bus::set_mode_all`] and [`Bus::safe_stop_all`] switch or stop every
 //! wheel round-major, so a vehicle stops in the same ~300 ms as one motor.
 //! Budget the wire: each motor needs its drive frame at ≥50 Hz, so N
-//! motors put ≥N×50 frames/s (plus replies, plus gaps) through one bus —
-//! see `USAGE.md` for the arithmetic.
+//! motors put ≥N×50 frames/s (plus replies, plus gaps) through one bus.
+//! [`bus_period`] computes that occupancy from [`frame_time`] and the gap;
+//! a loop's cycle must exceed it yet stay within [`drive_floor`]. See
+//! `USAGE.md` for the worked arithmetic.
 //!
 //! Coming from another fieldbus or motor-control ecosystem, the concepts
 //! map directly:
@@ -179,8 +181,8 @@ pub mod protocol;
 pub mod transport;
 pub mod types;
 
-pub use bus::{Bus, DEFAULT_MIN_GAP, M0601, ScanReport};
+pub use bus::{Bus, DEFAULT_MIN_GAP, M0601, ScanReport, bus_period};
 pub use error::{Error, Result};
-pub use protocol::ReplyKind;
+pub use protocol::{ReplyKind, drive_floor, frame_time};
 pub use transport::{MockTransport, SerialTransport, Transport};
 pub use types::{Faults, Feedback, Mode, Telemetry};
