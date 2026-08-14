@@ -9,6 +9,8 @@
 //! is merely too large should saturate the wheel, never wrap it around to
 //! full reverse. This is part of the crate's API contract.
 
+use std::time::Duration;
+
 use crate::error::{Error, Result};
 use crate::types::{Faults, Feedback, Mode};
 
@@ -52,6 +54,34 @@ pub const CMD_HZ_MAX: u32 = 500;
 
 /// A complete 10-byte bus frame.
 pub type Frame = [u8; FRAME_LEN];
+
+/// Time on the wire for one [`FRAME_LEN`]-byte frame at [`BAUD`] — 8N1 sends
+/// 10 bits per byte (1 start + 8 data + 1 stop). This is the unit every
+/// bus-occupancy budget is built from (see [`crate::bus::bus_period`]); the
+/// same wire time that sizes [`DEFAULT_MIN_GAP`](crate::DEFAULT_MIN_GAP).
+///
+/// ```
+/// use m0601::protocol::frame_time;
+/// // 10 bytes × 10 bits ÷ 115200 baud ≈ 868 µs.
+/// assert_eq!(frame_time().as_micros(), 868);
+/// ```
+pub fn frame_time() -> Duration {
+    let bits = FRAME_LEN as u64 * 10;
+    Duration::from_micros(bits * 1_000_000 / u64::from(BAUD))
+}
+
+/// The longest a wheel may go between drive frames before it coasts: the
+/// period of the [`DRIVE_HZ_MIN`] floor. A periodic control loop's cycle
+/// must not exceed this, or every cycle the motor slips below the floor and
+/// coasts a little.
+///
+/// ```
+/// use m0601::protocol::drive_floor;
+/// assert_eq!(drive_floor().as_millis(), 20); // 1 s / 50 Hz
+/// ```
+pub fn drive_floor() -> Duration {
+    Duration::from_secs(1) / DRIVE_HZ_MIN
+}
 
 /// CRC-8/MAXIM (Dallas 1-Wire): polynomial x⁸+x⁵+x⁴+1, reflected (0x8C),
 /// init 0.

@@ -53,6 +53,38 @@ const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// [`Bus::with_min_gap`].
 pub const DEFAULT_MIN_GAP: Duration = Duration::from_micros(2500);
 
+/// The minimum wall-clock a bus needs for one round of `n_drives`
+/// fire-and-forget drive frames plus `n_polls` read exchanges, given the
+/// enforced idle `min_gap` after every frame and the `reply_wait` each poll
+/// blocks for.
+///
+/// This is the "budget the wire" arithmetic from the crate docs made
+/// executable: a drive frame costs one
+/// [`frame_time`](crate::protocol::frame_time) plus `min_gap`, and a poll
+/// additionally holds the bus for `reply_wait` (the transport sleeps out the
+/// whole window) before its own trailing gap. A periodic multi-motor loop's
+/// cycle must exceed this, and stay at or under
+/// [`drive_floor`](crate::protocol::drive_floor), or it cannot sustain its
+/// own period. `m0601-quad` sizes its cycle against `bus_period(4, 1, …)`.
+///
+/// ```
+/// use std::time::Duration;
+/// use m0601::bus_period;
+/// let gap = Duration::from_millis(2);
+/// // Four drives + one poll with a 2 ms reply window ≈ 16.34 ms.
+/// let p = bus_period(4, 1, gap, gap);
+/// assert!((16_000..16_700).contains(&(p.as_micros() as u64)));
+/// ```
+pub fn bus_period(
+    n_drives: u32,
+    n_polls: u32,
+    min_gap: Duration,
+    reply_wait: Duration,
+) -> Duration {
+    let frame = crate::protocol::frame_time();
+    (frame + min_gap) * n_drives + (frame + reply_wait + min_gap) * n_polls
+}
+
 /// Poison-tolerant lock. The guarded transport holds no invariants a panic
 /// could corrupt mid-update (each call is a complete frame exchange), and
 /// motor I/O — above all the stop paths — must keep working even if another
@@ -552,9 +584,10 @@ impl<T: Transport> Bus<T> {
     /// wheel against three coasting ones is an uncommanded yaw. Rounds are
     /// paced on absolute deadlines, so the period does not stretch with
     /// motor count — as long as the round's frames fit inside it. With enough
-    /// motors that `ids.len() × (frame_time + min_gap)` exceeds the 20 ms
-    /// round, a round runs long and the next simply starts late (the stop
-    /// still completes; it just takes more than ~300 ms).
+    /// motors that `ids.len()` frames (each
+    /// [`frame_time`](crate::protocol::frame_time) `+ min_gap`) exceed the
+    /// 20 ms round, a round runs long and the next simply starts late (the
+    /// stop still completes; it just takes more than ~300 ms).
     ///
     /// This is a shutdown path — it runs from quit handlers, panic unwinds
     /// and signal handlers, so it must not fail: it returns `()`, swallows
