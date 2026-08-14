@@ -108,11 +108,19 @@ struct Port<T> {
 impl<T: Transport> Port<T> {
     /// How much longer the bus must stay idle before the next TX may start.
     /// Routed through [`Transport::pace`] so mocks never wait.
+    ///
+    /// The budget is `frame_time() + min_gap`, not `min_gap` alone: a
+    /// fire-and-forget send returns as soon as the frame is buffered (no
+    /// `tcdrain` — see [`Transport::send`]), so `last_tx` marks the *start*
+    /// of the frame on the wire and the frame's own wire time must be
+    /// spaced out here. For an op that already outlived its TX (a poll
+    /// slept out its reply window) the extra `frame_time()` is a harmless
+    /// 0.9 ms of over-spacing.
     fn gap_remaining(&self) -> Duration {
         match self.last_tx {
-            Some(at) => self
-                .transport
-                .pace(self.min_gap.saturating_sub(at.elapsed())),
+            Some(at) => self.transport.pace(
+                (crate::protocol::frame_time() + self.min_gap).saturating_sub(at.elapsed()),
+            ),
             None => Duration::ZERO,
         }
     }
@@ -125,8 +133,10 @@ impl<T: Transport> Port<T> {
 /// competing handle that transmitted during the sleep pushes this frame
 /// further back rather than overlapping it. `last_tx` is stamped when the
 /// operation returns: for a fire-and-forget send that is the moment the
-/// frame finished draining to the wire, and the gap that follows is what
-/// keeps the unread reply it elicits clear of the next frame.
+/// frame started onto the wire (writes are not drained), which is why
+/// [`Port::gap_remaining`] budgets the frame's wire time on top of the
+/// idle gap that keeps the unread reply it elicits clear of the next
+/// frame.
 fn with_gap<T: Transport, R>(
     port: &Mutex<Port<T>>,
     mut op: impl FnMut(&mut T) -> Result<R>,
