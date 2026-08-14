@@ -10,7 +10,7 @@
 //! | `SENSOR_ERR` | `FailStopAll` — closed-loop velocity is meaningless without halls |
 //! | `STALL` | `FailStopAll` — one jammed wheel + three driving pivots the chassis |
 //! | `OVERHEAT` | `FailStopAll`, **latched by the pilot** — the motor auto-clears at 75 °C and an unattended machine must not lurch back into motion |
-//! | motor `OVERCURRENT` / `PHASE_OVERCURRENT` bit | `FailStopAll` — the motor has *already* entered its own protection and stopped responding to drive commands, so the group stop brakes the other three wheels to keep the chassis straight; the brake frame is a no-op on the self-protected wheel (contrast the host-side trip below, which fires *before* the motor's own threshold on a still-energized wheel) |
+//! | motor `OVERCURRENT` / `PHASE_OVERCURRENT` bit | `FailStopNoBrake` — the motor has usually already cut power, but one frame can't prove it, so never brake a wheel drawing overcurrent (the brake shorts the windings and pulls more); held by velocity-0 like the host trip |
 //! | host current over trip, debounced | `FailStopNoBrake` — zero and latch, but do **not** brake: braking a still-energized jammed wheel draws more current, so the stop is held by continuing velocity-0 frames instead |
 //! | unknown fault bits | `Warn` — never silently drop what the motor reports |
 //!
@@ -98,7 +98,15 @@ pub fn assess(w: &WheelState, label: &str, cfg: &Config, now: Instant) -> Reacti
             )));
         }
         if f.overcurrent() || f.phase_overcurrent() {
-            verdict = verdict.max(Reaction::FailStopAll(format!(
+            // GUARD: never brake a wheel that is drawing overcurrent. The
+            // electric brake shorts the windings and would only pull more
+            // current on a still-energized wheel. A motor that set this bit
+            // has *usually* already entered protection and cut power — but a
+            // single telemetry frame can't prove it has, so don't rely on
+            // that: treat a motor-reported overcurrent exactly like the
+            // host-side trip below (zero and latch every wheel, no brake
+            // frames; the stop is held by the continuing velocity-0 stream).
+            verdict = verdict.max(Reaction::FailStopNoBrake(format!(
                 "{label} motor overcurrent protection tripped"
             )));
         }
@@ -187,13 +195,29 @@ mod tests {
     }
 
     #[test]
-    fn each_hard_fault_bit_stops_the_vehicle() {
+    fn sensor_stall_and_overheat_brake_the_vehicle() {
         let now = Instant::now();
-        for bits in [0x01u8, 0x02, 0x04, 0x08, 0x10] {
+        for bits in [0x01u8, 0x08, 0x10] {
             let w = wheel(now, Duration::from_millis(10), bits);
             assert!(
                 matches!(assess(&w, "FL", &cfg(), now), Reaction::FailStopAll(_)),
-                "fault bits 0x{bits:02X} must stop all four wheels"
+                "fault bits 0x{bits:02X} must brake all four wheels"
+            );
+        }
+    }
+
+    #[test]
+    fn motor_overcurrent_stops_without_braking() {
+        // A wheel drawing overcurrent must never be braked — the electric
+        // brake shorts the windings and pulls more current. Both the bus
+        // (0x02) and phase (0x04) overcurrent bits take the no-brake path,
+        // matching the host-side current trip.
+        let now = Instant::now();
+        for bits in [0x02u8, 0x04] {
+            let w = wheel(now, Duration::from_millis(10), bits);
+            assert!(
+                matches!(assess(&w, "FL", &cfg(), now), Reaction::FailStopNoBrake(_)),
+                "overcurrent bits 0x{bits:02X} must stop without braking"
             );
         }
     }

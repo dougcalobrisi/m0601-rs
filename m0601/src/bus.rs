@@ -41,6 +41,16 @@ const SET_ID_REPEAT_GAP: Duration = Duration::from_millis(50);
 const SET_ID_SETTLE: Duration = Duration::from_millis(500);
 /// Gap between the frames of a [`M0601::safe_stop`] sequence (50 Hz).
 const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
+/// Acceleration byte for the velocity-0 rounds of a stop sequence.
+///
+/// **Not** the fastest ramp (`1`): a hard ramp-to-zero on a loaded wheel can
+/// trip the motor's own 3 A bus-overcurrent protection *during* the stop, at
+/// which point it stops responding to drive commands and the controlled
+/// deceleration is defeated — the opposite of what a safe stop wants. A
+/// moderate ramp decelerates firmly without provoking that trip, and the
+/// brake rounds that follow still deliver the hard final hold. `5` matches
+/// the value `m0601-quad` recommends for launch (see its `limits.accel`).
+const SAFE_STOP_ACCEL: u8 = 5;
 
 /// Default minimum idle gap enforced between frames on a bus — see
 /// [`Bus::with_min_gap`].
@@ -210,7 +220,7 @@ fn stop_all<T: Transport>(port: &Mutex<Port<T>>, ids: &[u8]) {
             ids,
             |id| match step {
                 0..=4 => frame_mode(id, Mode::Velocity),
-                5..=9 => frame_velocity(id, 0, 1),
+                5..=9 => frame_velocity(id, 0, SAFE_STOP_ACCEL),
                 _ => frame_brake(id),
             },
             deadline,
