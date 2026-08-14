@@ -72,9 +72,17 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
                     // 0 for velocity and current, but the wheel's present
                     // angle for position, where 0 means "drive to 0 deg".
                     let target = req.target.unwrap_or_else(|| match req.mode {
-                        Mode::Position => lock(&shared.telemetry)
-                            .fb
-                            .map_or(0, |fb| super::ui::deg_to_raw(fb.position_deg)),
+                        Mode::Position => {
+                            // Seed the hold from the SAME angle the dashboard
+                            // shows — the hi-res angle retained from drive
+                            // replies — not the coarse 8-bit angle of the
+                            // latest 0x74 query reply, or "hold current
+                            // position" would nudge the wheel up to ~1.4°.
+                            let tele = lock(&shared.telemetry);
+                            tele.position_deg
+                                .or_else(|| tele.fb.map(|fb| fb.position_deg))
+                                .map_or(0, super::ui::deg_to_raw)
+                        }
                         Mode::Velocity | Mode::Current => 0,
                     });
                     let mut cmd = lock(&shared.cmd);

@@ -370,7 +370,15 @@ fn annotate(msg: String, pending: bool) -> String {
 /// Set the position target to the wheel's current angle. `None` when there
 /// is no telemetry to derive it from.
 fn hold_position(shared: &Shared) -> Option<f32> {
-    let deg = lock(&shared.telemetry).fb.map(|fb| fb.position_deg)?;
+    // Prefer the hi-res angle retained from drive replies (what the
+    // dashboard displays); fall back to the latest reply's own angle. Seeding
+    // from the coarse 8-bit query reply would hold up to ~1.4° off the shown
+    // value and contradict the "Holding … deg" message.
+    let deg = {
+        let tele = lock(&shared.telemetry);
+        tele.position_deg
+            .or_else(|| tele.fb.map(|fb| fb.position_deg))?
+    };
     let mut cmd = lock(&shared.cmd);
     cmd.target = deg_to_raw(deg);
     cmd.brake = false;
@@ -641,6 +649,39 @@ mod tests {
             lock(&shared.cmd).target,
             20_000,
             "held angle must be the exact reported position step"
+        );
+    }
+
+    #[test]
+    fn stop_in_position_mode_seeds_the_displayed_hi_res_angle_not_the_coarse_reply() {
+        // A drive reply set the hi-res angle the dashboard shows; a *later*
+        // query reply then left `fb` coarse (~1.4° steps) without disturbing
+        // that retained hi-res value. Holding position must seed from the
+        // displayed hi-res angle, not the coarse `fb`, or "hold current
+        // position" nudges the wheel and contradicts the on-screen readout.
+        let shared = Shared::new();
+        lock(&shared.cmd).mode = Mode::Position;
+        seed_drive(&shared, 0x03, 0, 20_000); // hi-res ≈ 219.7°, retained
+        seed(&shared, 0x03, 0); // coarse query reply, 0x80 ≈ 180.7°
+
+        // Precondition: the coarse `fb` and the retained hi-res angle really
+        // do disagree, so the test would catch a regression to the coarse seed.
+        {
+            let tele = lock(&shared.telemetry);
+            let coarse = tele.fb.map(|fb| fb.position_deg).expect("fb seeded");
+            let hires = tele.position_deg.expect("hi-res retained");
+            assert!(
+                (coarse - hires).abs() > 30.0,
+                "coarse {coarse} and hi-res {hires} must differ for this test"
+            );
+        }
+
+        press(&shared, 's');
+
+        assert_eq!(
+            lock(&shared.cmd).target,
+            20_000,
+            "held angle must be the displayed hi-res angle, not the coarse reply"
         );
     }
 }
