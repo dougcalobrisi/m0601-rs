@@ -165,6 +165,13 @@ impl Config {
         }
     }
 
+    // Timing accessors. The `unwrap_or` fallbacks are **only** reachable for
+    // non-finite/negative values, which `validate()` (below) rejects outright
+    // — so on the sole shipped call path (`load` → `validate` → pilot) they
+    // never fire, and a merely-wrong-but-finite value is used as written
+    // rather than masked. Callers that `parse()` without `validate()` (some
+    // unit tests) are the only ones that can observe a fallback; treat these
+    // literals as a last-resort library default, not the operator's tuning.
     pub fn cycle(&self) -> Duration {
         ms(self.bus.cycle_ms).unwrap_or(Duration::from_millis(18))
     }

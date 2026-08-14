@@ -10,7 +10,8 @@
 //! | `SENSOR_ERR` | `FailStopAll` — closed-loop velocity is meaningless without halls |
 //! | `STALL` | `FailStopAll` — one jammed wheel + three driving pivots the chassis |
 //! | `OVERHEAT` | `FailStopAll`, **latched by the pilot** — the motor auto-clears at 75 °C and an unattended machine must not lurch back into motion |
-//! | current over trip, debounced | `FailStopNoBrake` — zero and latch, but do **not** brake: braking a jammed wheel draws more current, so the stop is held by continuing velocity-0 frames instead |
+//! | motor `OVERCURRENT` / `PHASE_OVERCURRENT` bit | `FailStopAll` — the motor has *already* entered its own protection and stopped responding to drive commands, so the group stop brakes the other three wheels to keep the chassis straight; the brake frame is a no-op on the self-protected wheel (contrast the host-side trip below, which fires *before* the motor's own threshold on a still-energized wheel) |
+//! | host current over trip, debounced | `FailStopNoBrake` — zero and latch, but do **not** brake: braking a still-energized jammed wheel draws more current, so the stop is held by continuing velocity-0 frames instead |
 //! | unknown fault bits | `Warn` — never silently drop what the motor reports |
 //!
 //! Every `FailStopAll` latches (the pilot requires an explicit re-arm);

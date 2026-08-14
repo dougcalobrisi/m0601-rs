@@ -36,7 +36,7 @@ individual bytes.
 ```
 TX: 01 74 00 00 00 00 00 00 00 04
 RX: 01 02 FF F9 00 00 1E BB 00 5F
-    decoded -> mode Velocity, +0 RPM, -0.002 A, 264.0 deg, temp 30, err OK
+    decoded -> mode Velocity, 0 RPM, -0.002 A, 264.0 deg, temp 30C, err OK
 ```
 
 `raw` only decodes when the frame you sent was a telemetry-eliciting command, and it

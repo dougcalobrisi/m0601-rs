@@ -33,7 +33,8 @@ Its guard is an **exhaustive scan of all 254 addresses** before it writes:
 
 ```
 ====================================================
-  Set Motor ID
+  M0601 ID Changer
+  Port: /dev/ttyUSB0  ->  New ID: 0x05 (5)
 ====================================================
   WARNING: only ONE motor may be on the bus. ID is persistent.
   Checking the bus is not shared (polling all 254 IDs)... done.

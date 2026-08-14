@@ -30,7 +30,7 @@ The rate is held by measuring how long each poll took and sleeping the remainder
 ## Reading the line
 
 ```
-[14:32:07] #142 | Velocity | Speed +100 | Cur +0.312 | Pos 187.4 | Temp 41C | OK
+[14:32:07] #  142 | Velocity | Speed +100 RPM | Cur +0.312 A | Pos 187.4 | Temp  41C | OK
 ```
 
 Timestamp, a running count, the reported mode, and the decoded telemetry. `OK`
