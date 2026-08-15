@@ -670,28 +670,28 @@ pub fn frame_drive_reply(
 }
 
 /// Assemble a reply frame from its already-encoded parts and seal it with a
-/// correct CRC-8/MAXIM. Bytes 6–7 (`b67`) are the one part that differs
+/// correct CRC-8/MAXIM. Bytes 6–7 (`bytes_6_7`) are the one part that differs
 /// between the two reply layouts.
 fn reply_frame(
     id: u8,
     mode: Mode,
     current: [u8; 2],
     speed: [u8; 2],
-    b67: [u8; 2],
+    bytes_6_7: [u8; 2],
     faults: Faults,
 ) -> Frame {
-    let mut f: Frame = [0; FRAME_LEN];
-    f[0] = id;
-    f[1] = mode.as_byte();
-    f[2] = current[0];
-    f[3] = current[1];
-    f[4] = speed[0];
-    f[5] = speed[1];
-    f[6] = b67[0];
-    f[7] = b67[1];
-    f[8] = faults.0;
-    f[9] = crc8_maxim(&f[..9]);
-    f
+    let mut frame: Frame = [0; FRAME_LEN];
+    frame[0] = id;
+    frame[1] = mode.as_byte();
+    frame[2] = current[0];
+    frame[3] = current[1];
+    frame[4] = speed[0];
+    frame[5] = speed[1];
+    frame[6] = bytes_6_7[0];
+    frame[7] = bytes_6_7[1];
+    frame[8] = faults.0;
+    frame[9] = crc8_maxim(&frame[..9]);
+    frame
 }
 
 /// Strip a leading half-duplex TX echo from a raw reply.

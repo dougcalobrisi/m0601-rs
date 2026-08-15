@@ -1,10 +1,14 @@
 name: Release
 
 # DISABLED BY DEFAULT. This workflow only runs on manual dispatch, and even
-# then every job is gated on the repository variable RELEASE_ENABLED == 'true'.
+# then it is gated on the repository variable RELEASE_ENABLED == 'true'. The
+# `if:` guard lives on the `preflight` job alone; every other job inherits the
+# gate transitively via `needs: preflight` (a skipped dependency skips them).
 # To arm it: set that variable (Settings → Secrets and variables → Actions →
 # Variables → New variable, RELEASE_ENABLED = true), or delete the `if:` guard
-# on each job. Until then a manual run is a no-op and nothing is published.
+# on `preflight`. Until then a manual run is a no-op and nothing is published.
+# (Keep the gate as a `needs` chain — do not add `if: always()`/`if: !cancelled()`
+# to a downstream job, which would defeat the skip-propagation.)
 #
 # Publishing uses crates.io Trusted Publishing (OIDC) — no long-lived token.
 # Before the FIRST release, configure Trusted Publishing for BOTH crates on
@@ -119,7 +123,7 @@ jobs:
         run: |
           # m0601-cli's dry-run cannot resolve `m0601` until the library is on
           # crates.io, so only the library is verifiable pre-release. Once
-          # m0601 is published, drop --allow-dirty and it resolves normally.
+          # m0601 is published, m0601-cli resolves it from crates.io normally.
           cargo publish -p m0601 --dry-run
           echo "Dry run — would publish m0601 then m0601-cli v${{ needs.preflight.outputs.version }}"
 

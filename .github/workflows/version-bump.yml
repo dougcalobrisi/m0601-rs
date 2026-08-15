@@ -28,7 +28,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$'; then
-            echo "::error::Invalid version: $VERSION (expected X.Y.Z or X.Y.Z-rc.N)"
+            echo "::error::Invalid version: $VERSION (expected X.Y.Z or X.Y.Z-{alpha,beta,rc}.N)"
             exit 1
           fi
           echo "Version format valid: $VERSION"
@@ -51,9 +51,12 @@ jobs:
           text = open("Cargo.toml").read()
           # First top-level `version = "..."` is [workspace.package].version.
           text, n1 = re.subn(r'(?m)^version = "[^"]*"', f'version = "{version}"', text, count=1)
-          # The m0601 path dependency's publish version.
-          text, n2 = re.subn(r'(m0601 = \{ path = "m0601", version = )"[^"]*"',
-                              rf'\g<1>"{version}"', text)
+          # The m0601 path dependency's publish version. Match the inline
+          # table tolerantly (any whitespace, either attribute order) so a
+          # reformat of Cargo.toml doesn't silently break the bump.
+          text, n2 = re.subn(
+              r'(m0601\s*=\s*\{[^}]*\bversion\s*=\s*)"[^"]*"',
+              rf'\g<1>"{version}"', text)
           if n1 != 1 or n2 != 1:
               sys.exit(f"::error::expected 1 match each, got workspace={n1} dep={n2}")
           open("Cargo.toml", "w").write(text)
