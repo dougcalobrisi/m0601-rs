@@ -30,7 +30,7 @@ mod motor;
 mod pacing;
 mod timing;
 
-pub use motor::M0601;
+pub use motor::{M0601, PositionMirror};
 pub use timing::{BusTiming, DEFAULT_DRIVE_ACCEL, DEFAULT_MIN_GAP, bus_period};
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -274,6 +274,7 @@ impl<T: Transport> Bus<T> {
             id,
             timeout: self.timeout,
             mirrored: false,
+            position_mirror: PositionMirror::default(),
             strict_crc: self.strict_crc,
             default_accel: self.default_accel,
         })

@@ -14,6 +14,31 @@ use crate::types::{Feedback, Mode};
 use super::Bus;
 use super::pacing::{Port, mode_all, peek_min_gap, stop_all, with_gap};
 
+/// How a handle maps the *position* an opposite-side (mirrored) wheel reports.
+///
+/// [`mirrored(true)`](M0601::mirrored) flips the signs of reported speed and
+/// current so "positive = robot forward" holds on both sides, but it leaves
+/// the reported **angle** alone — because the right transform for an angle
+/// depends on your mechanical convention, and the driver won't guess. This
+/// selects that convention when you do want it applied.
+///
+/// It is an independent knob from [`mirrored`](M0601::mirrored): set both on a
+/// mirrored wheel (`.mirrored(true).position_mirror(PositionMirror::Reflect)`)
+/// to have angle read in robot-forward terms too. [`Feedback::raw`] always
+/// keeps the untouched wire bytes regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
+pub enum PositionMirror {
+    /// Report the wire angle unchanged. The default, and the crate's
+    /// historical behavior for every handle.
+    #[default]
+    PassThrough,
+    /// Reflect the angle about 0°: a reported `θ` becomes `(360° − θ) mod
+    /// 360`, so a mirror-image wheel's angle counts up the same way its
+    /// sign-flipped speed does.
+    Reflect,
+}
+
 /// Driver handle for one M0601 motor on an RS485 [`Bus`].
 ///
 /// Minted by [`Bus::motor`] (or the [`M0601::open`] single-motor
@@ -41,14 +66,20 @@ use super::pacing::{Port, mode_all, peek_min_gap, stop_all, with_gap};
 /// [`mirrored(true)`](Self::mirrored) and "positive = robot forward" holds
 /// for both: velocity/current *setpoints* are negated on the way out, and
 /// the *signs* of reported speed and current are flipped on the way in.
-/// Position values pass through untouched — the right mirror transform for
-/// an angle (e.g. `360° − x`) depends on your mechanical convention — and
-/// [`Feedback::raw`] always keeps the unmodified wire frame.
+/// Reported position passes through untouched by default — the right mirror
+/// transform for an angle depends on your mechanical convention, so the
+/// driver won't guess — but opt into one with
+/// [`position_mirror`](Self::position_mirror) ([`PositionMirror::Reflect`])
+/// when you want the angle in robot-forward terms too. [`Feedback::raw`]
+/// always keeps the unmodified wire frame.
 pub struct M0601<T: Transport = SerialTransport> {
     pub(super) port: Arc<Mutex<Port<T>>>,
     pub(super) id: u8,
     pub(super) timeout: Duration,
     pub(super) mirrored: bool,
+    /// How reported position is mapped for a mirrored wheel — see
+    /// [`position_mirror`](Self::position_mirror).
+    pub(super) position_mirror: PositionMirror,
     /// Reject CRC-failing telemetry rather than returning it advisory — see
     /// [`with_strict_crc`](Self::with_strict_crc).
     pub(super) strict_crc: bool,
@@ -65,6 +96,7 @@ impl<T: Transport> Clone for M0601<T> {
             id: self.id,
             timeout: self.timeout,
             mirrored: self.mirrored,
+            position_mirror: self.position_mirror,
             strict_crc: self.strict_crc,
             default_accel: self.default_accel,
         }
@@ -80,6 +112,7 @@ impl<T: Transport> std::fmt::Debug for M0601<T> {
             .field("id", &self.id)
             .field("timeout", &self.timeout)
             .field("mirrored", &self.mirrored)
+            .field("position_mirror", &self.position_mirror)
             .field("strict_crc", &self.strict_crc)
             .field("default_accel", &self.default_accel)
             .field("min_gap", &peek_min_gap(&self.port))
@@ -113,6 +146,26 @@ impl<T: Transport> M0601<T> {
     /// Whether this handle flips velocity/current signs.
     pub fn is_mirrored(&self) -> bool {
         self.mirrored
+    }
+
+    /// Choose how reported **position** is mapped for a mirrored wheel — see
+    /// [`PositionMirror`]. Builder-style:
+    /// `bus.motor(0x01)?.mirrored(true).position_mirror(PositionMirror::Reflect)`.
+    ///
+    /// Defaults to [`PositionMirror::PassThrough`] (the wire angle unchanged),
+    /// which is what every handle did before this existed. This is independent
+    /// of [`mirrored`](Self::mirrored): it only rewrites the *position* field
+    /// of parsed telemetry, and never the raw frame ([`Feedback::raw`]).
+    #[must_use]
+    pub fn position_mirror(mut self, mode: PositionMirror) -> Self {
+        self.position_mirror = mode;
+        self
+    }
+
+    /// This handle's position-mirror convention
+    /// ([`position_mirror`](Self::position_mirror)).
+    pub fn position_mirror_mode(&self) -> PositionMirror {
+        self.position_mirror
     }
 
     /// Reject CRC-failing telemetry on this handle: any decoded [`Feedback`]
@@ -245,6 +298,12 @@ impl<T: Transport> M0601<T> {
             // `0.0 - x` rather than `-x` so a zero current mirrors to +0.0,
             // not the -0.0 that would print as "-0.000 A".
             fb.current_a = 0.0 - fb.current_a;
+        }
+        if self.position_mirror == PositionMirror::Reflect {
+            // Reflect about 0°: 360 − θ, folded back into [0, 360) so that a
+            // reported 0° stays 0° rather than becoming 360°. `raw` is left
+            // untouched — it is always the ground-truth wire frame.
+            fb.position_deg = (360.0 - fb.position_deg).rem_euclid(360.0);
         }
         fb
     }

@@ -9,7 +9,7 @@ use m0601::protocol::{
     ReplyKind, frame_brake, frame_feedback, frame_from_bytes, frame_id_query, frame_mode,
     frame_velocity,
 };
-use m0601::{Bus, BusTiming, Error, M0601, MockTransport, Mode};
+use m0601::{Bus, BusTiming, Error, M0601, MockTransport, Mode, PositionMirror};
 
 const TIMEOUT: Duration = Duration::from_millis(150);
 
@@ -739,6 +739,68 @@ fn mirrored_drive_reply_flips_speed_but_not_position() {
     // The 16-bit drive-reply position is an absolute angle: not mirrored.
     assert_eq!((fb.position_deg * 10.0).round() / 10.0, 113.9);
     assert_eq!(fb.temp_c, None);
+}
+
+#[test]
+fn position_mirror_defaults_to_pass_through() {
+    let m = motor(MockTransport::default());
+    assert_eq!(m.position_mirror_mode(), PositionMirror::PassThrough);
+    // A mirrored handle still leaves position alone unless asked otherwise.
+    let m = m.mirrored(true);
+    assert_eq!(m.position_mirror_mode(), PositionMirror::PassThrough);
+}
+
+#[test]
+fn position_mirror_reflect_reflects_the_reported_angle() {
+    // Wire position 0x2880 = 10368 → ~113.9°; reflected about 0° that is
+    // 360 − 113.9 = ~246.1°. Speed is still sign-flipped by mirrored(true),
+    // and the raw wire frame stays untouched.
+    let reply = vec![0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x80, 0x00, 0x00];
+    let mut m = motor(MockTransport::with_replies([reply]))
+        .mirrored(true)
+        .position_mirror(PositionMirror::Reflect);
+    assert_eq!(m.position_mirror_mode(), PositionMirror::Reflect);
+    let fb = m
+        .transact(&frame_velocity(0x01, 100, 1), Duration::ZERO)
+        .unwrap()
+        .expect("telemetry");
+    assert_eq!(fb.speed_rpm, -100);
+    assert_eq!((fb.position_deg * 10.0).round() / 10.0, 246.1);
+    // The reflection never touches the ground-truth wire bytes.
+    assert_eq!(fb.raw[6..8], [0x28, 0x80]);
+}
+
+#[test]
+fn position_mirror_reflect_folds_zero_to_zero() {
+    // 360 − 0 must fold back to 0°, not report a spurious 360°.
+    let reply = vec![0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut m =
+        motor(MockTransport::with_replies([reply])).position_mirror(PositionMirror::Reflect);
+    let fb = m
+        .transact(&frame_velocity(0x01, 0, 1), Duration::ZERO)
+        .unwrap()
+        .expect("telemetry");
+    assert_eq!(fb.position_deg, 0.0);
+}
+
+#[test]
+fn position_mirror_is_independent_of_velocity_current_mirroring() {
+    // Reflect position WITHOUT mirrored(true): the angle is reflected but the
+    // speed sign is left as the wire reports it. The two knobs don't imply
+    // each other.
+    let reply = vec![0x01, 0x02, 0x00, 0x00, 0x00, 0x64, 0x28, 0x80, 0x00, 0x00];
+    let mut m =
+        motor(MockTransport::with_replies([reply])).position_mirror(PositionMirror::Reflect);
+    assert!(!m.is_mirrored());
+    let fb = m
+        .transact(&frame_velocity(0x01, 100, 1), Duration::ZERO)
+        .unwrap()
+        .expect("telemetry");
+    assert_eq!(
+        fb.speed_rpm, 100,
+        "speed not flipped without mirrored(true)"
+    );
+    assert_eq!((fb.position_deg * 10.0).round() / 10.0, 246.1);
 }
 
 #[test]

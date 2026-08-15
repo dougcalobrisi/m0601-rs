@@ -182,7 +182,8 @@ pub mod transport;
 pub mod types;
 
 pub use bus::{
-    Bus, BusTiming, DEFAULT_DRIVE_ACCEL, DEFAULT_MIN_GAP, M0601, ScanReport, bus_period,
+    Bus, BusTiming, DEFAULT_DRIVE_ACCEL, DEFAULT_MIN_GAP, M0601, PositionMirror, ScanReport,
+    bus_period,
 };
 pub use error::{Error, Result};
 pub use protocol::{ReplyKind, drive_floor, frame_time};
