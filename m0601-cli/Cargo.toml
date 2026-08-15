@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["rs485", "motor", "robotics", "serial", "dfrobot"]
+# `command-line-utilities` is what `cargo install m0601-cli` users browse;
+# the rest mirror the library crate so the two pages read as one project.
+categories = ["command-line-utilities", "hardware-support", "science::robotics"]
 
 [[bin]]
 name = "m0601"

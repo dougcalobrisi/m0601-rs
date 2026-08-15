@@ -1,0 +1,156 @@
+name: Release
+
+# DISABLED BY DEFAULT. This workflow only runs on manual dispatch, and even
+# then every job is gated on the repository variable RELEASE_ENABLED == 'true'.
+# To arm it: set that variable (Settings → Secrets and variables → Actions →
+# Variables → New variable, RELEASE_ENABLED = true), or delete the `if:` guard
+# on each job. Until then a manual run is a no-op and nothing is published.
+#
+# Publishing uses crates.io Trusted Publishing (OIDC) — no long-lived token.
+# Before the FIRST release, configure Trusted Publishing for BOTH crates on
+# crates.io (crate settings → Trusted Publishing), pointing at this repo and
+# the `release.yml` workflow, each with its own `crates` environment. The
+# very first publish of a brand-new crate name may instead need a one-time
+# `CARGO_REGISTRY_TOKEN` (crates.io cannot verify OIDC against a crate that
+# does not exist yet); switch to OIDC-only once both names are claimed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (validate without publishing)"
+        required: false
+        type: boolean
+        default: true
+      create_tag:
+        description: "Create git tag + GitHub Release after a successful publish"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  # Pre-flight: confirm the tag isn't already taken and expose the version.
+  preflight:
+    if: ${{ vars.RELEASE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read workspace version
+        id: version
+        run: |
+          # Single source of truth: [workspace.package] version in the root
+          # Cargo.toml. Every publishable crate inherits it (version.workspace).
+          VERSION=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read workspace.package.version from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Workspace version: $VERSION"
+
+      - name: Check tag doesn't already exist
+        if: ${{ inputs.create_tag && !inputs.dry_run }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Bump workspace.package.version before releasing."
+            exit 1
+          fi
+          echo "Tag $TAG is available"
+
+  # Reuse the existing CI suite as a release gate.
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  # Publish the library then the CLI. Order matters: m0601-cli resolves its
+  # `m0601` dependency from crates.io, so the library must land first. cargo
+  # (>=1.66) waits for a published crate to appear in the index before
+  # returning, so the sequential publish is safe.
+  publish:
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    environment: crates
+    permissions:
+      contents: read
+      id-token: write # for crates.io Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Verify crate versions match the tag
+        run: |
+          EXPECTED="${{ needs.preflight.outputs.version }}"
+          for crate in m0601 m0601-cli; do
+            ACTUAL=$(cargo metadata --no-deps --format-version 1 \
+              | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$crate'))")
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::$crate is $ACTUAL, expected $EXPECTED"
+              exit 1
+            fi
+            echo "$crate version verified: $ACTUAL"
+          done
+
+      - name: Authenticate with crates.io (OIDC)
+        if: ${{ !inputs.dry_run }}
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: crates-auth
+
+      - name: Publish m0601 (library)
+        if: ${{ !inputs.dry_run }}
+        run: cargo publish -p m0601
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+
+      - name: Publish m0601-cli (binary)
+        if: ${{ !inputs.dry_run }}
+        run: cargo publish -p m0601-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+
+      - name: Dry run — validate packaging without uploading
+        if: ${{ inputs.dry_run }}
+        run: |
+          # m0601-cli's dry-run cannot resolve `m0601` until the library is on
+          # crates.io, so only the library is verifiable pre-release. Once
+          # m0601 is published, drop --allow-dirty and it resolves normally.
+          cargo publish -p m0601 --dry-run
+          echo "Dry run — would publish m0601 then m0601-cli v${{ needs.preflight.outputs.version }}"
+
+  # Tag and cut a GitHub Release once both crates are up. m0601-quad is never
+  # published (publish = false) and needs no mention here.
+  release:
+    needs: [preflight, publish]
+    if: ${{ inputs.create_tag && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Create and push tag
+        run: |
+          TAG="v${{ needs.preflight.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: "v${{ needs.preflight.outputs.version }}"
+          name: "Release v${{ needs.preflight.outputs.version }}"
+          prerelease: ${{ contains(needs.preflight.outputs.version, '-') }}
+          generate_release_notes: true
+          body: |
+            ## Published
+
+            - **crates.io (library)**: [m0601 ${{ needs.preflight.outputs.version }}](https://crates.io/crates/m0601/${{ needs.preflight.outputs.version }}) — `cargo add m0601`
+            - **crates.io (CLI)**: [m0601-cli ${{ needs.preflight.outputs.version }}](https://crates.io/crates/m0601-cli/${{ needs.preflight.outputs.version }}) — `cargo install m0601-cli`

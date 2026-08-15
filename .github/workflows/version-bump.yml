@@ -1,0 +1,79 @@
+name: Version Bump
+
+# DISABLED BY DEFAULT — manual dispatch only, and gated on the repository
+# variable RELEASE_ENABLED == 'true' (same switch as release.yml). Until that
+# variable is set, a manual run is a no-op. This opens a PR that bumps the
+# single workspace version; it never publishes. After the PR merges, run the
+# Release workflow to publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (e.g. 0.2.0 or 0.2.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    if: ${{ vars.RELEASE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$'; then
+            echo "::error::Invalid version: $VERSION (expected X.Y.Z or X.Y.Z-rc.N)"
+            exit 1
+          fi
+          echo "Version format valid: $VERSION"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Bump workspace version and refresh lockfile
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          # Members inherit via version.workspace = true, so the only literal
+          # version string is under [workspace.package] in the root manifest.
+          # The workspace.dependencies m0601 entry also carries a matching
+          # version for publishing (see the note in Cargo.toml) — bump both.
+          python3 - "$VERSION" <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          text = open("Cargo.toml").read()
+          # First top-level `version = "..."` is [workspace.package].version.
+          text, n1 = re.subn(r'(?m)^version = "[^"]*"', f'version = "{version}"', text, count=1)
+          # The m0601 path dependency's publish version.
+          text, n2 = re.subn(r'(m0601 = \{ path = "m0601", version = )"[^"]*"',
+                              rf'\g<1>"{version}"', text)
+          if n1 != 1 or n2 != 1:
+              sys.exit(f"::error::expected 1 match each, got workspace={n1} dep={n2}")
+          open("Cargo.toml", "w").write(text)
+          PY
+          cargo update --workspace
+          echo "Bumped to $VERSION"
+          grep -nE '^version = |m0601 = \{ path' Cargo.toml
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          BRANCH="chore/bump-version-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -am "chore: bump version to ${VERSION}"
+          git push origin HEAD
+          gh pr create \
+            --title "chore: bump version to ${VERSION}" \
+            --body "Bumps the workspace version to \`${VERSION}\` (root \`Cargo.toml\` + \`Cargo.lock\`). After merge, run the **Release** workflow to publish \`m0601\` and \`m0601-cli\`. Triggered by @${ACTOR}."
