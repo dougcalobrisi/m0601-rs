@@ -403,6 +403,33 @@ pub fn deg_to_raw(deg: f32) -> u16 {
     (frac * f32::from(POS_MAX)).round() as u16
 }
 
+/// Degrees → raw 8-bit position, clamped to `0..=255`, as carried in byte 7
+/// of a [`ReplyKind::Query`] reply.
+///
+/// The inverse of [`raw8_to_deg`] (divisor **255**, so 360° maps to `0xFF`).
+/// Like [`deg_to_raw`] it clamps rather than wrapping, rounds to nearest, and
+/// maps non-finite input to `0`. Mainly of use to a simulator or test
+/// synthesizing a query reply with [`frame_query_reply`].
+///
+/// ```
+/// use m0601::protocol::{deg_to_raw8, raw8_to_deg};
+/// assert_eq!(deg_to_raw8(0.0), 0);
+/// assert_eq!(deg_to_raw8(360.0), 255);
+/// assert_eq!(deg_to_raw8(-1.0), 0);      // clamps, not wraps
+/// assert_eq!(deg_to_raw8(720.0), 255);
+/// assert_eq!(deg_to_raw8(f32::NAN), 0);
+/// // Round-trips a value that came from raw8_to_deg exactly.
+/// assert_eq!(deg_to_raw8(raw8_to_deg(200)), 200);
+/// ```
+pub fn deg_to_raw8(deg: f32) -> u8 {
+    if !deg.is_finite() {
+        return 0;
+    }
+    let frac = (deg / 360.0).clamp(0.0, 1.0);
+    // Saturating cast of an already-clamped value: cannot wrap or trap.
+    (frac * 255.0).round() as u8
+}
+
 /// Which command elicited a telemetry reply — and therefore how its
 /// bytes 6–7 must be decoded.
 ///
@@ -540,6 +567,131 @@ pub fn parse_feedback(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
 /// ```
 pub fn parse_feedback_strict(data: &[u8], kind: ReplyKind) -> Option<Feedback> {
     parse_feedback(data, kind).filter(|fb| fb.crc_ok)
+}
+
+/// Encode a synthetic **query-layout** reply frame (the layout elicited by a
+/// [`CMD_QUERY`] / `0x74` request): the encode-side inverse of
+/// [`parse_feedback`] for [`ReplyKind::Query`].
+///
+/// The `0x74` names the *TX command* that selects this layout, not a byte in
+/// the frame: byte 1 of the reply is the [`Mode`], never the command byte.
+///
+/// This is what a simulator or a test needs to stand in for a real motor —
+/// building the ten telemetry bytes (with a correct CRC-8/MAXIM in byte 9) by
+/// hand is error-prone, and [`Feedback`] is deliberately `#[non_exhaustive]`
+/// so it cannot be constructed by struct literal. Build a reply frame here,
+/// then feed it to [`parse_feedback`] or a
+/// [`MockTransport`](crate::MockTransport) exactly as a real reply would flow.
+///
+/// `current_a` is quantised through [`amps_to_raw`] and `position_deg` through
+/// [`deg_to_raw8`] (the coarse ~1.4° byte-7 resolution of a query reply), so a
+/// round-trip back through [`parse_feedback`] returns those two within one
+/// quantisation step; `id`, `mode`, `speed_rpm`, `temp_c` and `faults`
+/// round-trip exactly. The resulting frame's [`Feedback::crc_ok`] is `true`.
+///
+/// ```
+/// use m0601::protocol::{frame_query_reply, parse_feedback, ReplyKind};
+/// use m0601::{Faults, Mode};
+/// let frame = frame_query_reply(0x01, Mode::Velocity, 1.0, 100, 40, 180.0, Faults(0));
+/// let fb = parse_feedback(&frame, ReplyKind::Query).unwrap();
+/// assert_eq!(fb.id, 0x01);
+/// assert_eq!(fb.mode, Some(Mode::Velocity));
+/// assert_eq!(fb.speed_rpm, 100);
+/// assert_eq!(fb.temp_c, Some(40));
+/// assert!(fb.crc_ok);
+/// assert!((fb.current_a - 1.0).abs() < 0.01);
+/// assert!((fb.position_deg - 180.0).abs() < 1.5); // coarse 8-bit position
+/// ```
+pub fn frame_query_reply(
+    id: u8,
+    mode: Mode,
+    current_a: f32,
+    speed_rpm: i16,
+    temp_c: u8,
+    position_deg: f32,
+    faults: Faults,
+) -> Frame {
+    let current = amps_to_raw(current_a).to_be_bytes();
+    let speed = speed_rpm.to_be_bytes();
+    reply_frame(
+        id,
+        mode,
+        current,
+        speed,
+        [temp_c, deg_to_raw8(position_deg)],
+        faults,
+    )
+}
+
+/// Encode a synthetic **drive-layout** reply frame (the layout elicited by a
+/// [`CMD_DRIVE`] / `0x64` frame or the broadcast ID query): the encode-side
+/// inverse of [`parse_feedback`] for [`ReplyKind::Drive`].
+///
+/// As with [`frame_query_reply`], the `0x64` is the *TX command* that selects
+/// the layout, not a byte in the reply — byte 1 is the [`Mode`].
+///
+/// The counterpart to [`frame_query_reply`] for the drive-reply layout —
+/// bytes 6–7 hold a hi-res 16-bit position (~0.011°) and there is no
+/// temperature. See [`frame_query_reply`] for why this exists and how it round-
+/// trips; here `position_deg` goes through the finer [`deg_to_raw`], so it
+/// returns from [`parse_feedback`] within ~0.011°.
+///
+/// ```
+/// use m0601::protocol::{frame_drive_reply, parse_feedback, ReplyKind};
+/// use m0601::{Faults, Mode};
+/// let frame = frame_drive_reply(0x02, Mode::Velocity, -2.0, -50, 113.9, Faults(Faults::STALL));
+/// let fb = parse_feedback(&frame, ReplyKind::Drive).unwrap();
+/// assert_eq!(fb.id, 0x02);
+/// assert_eq!(fb.speed_rpm, -50);
+/// assert_eq!(fb.temp_c, None);          // drive replies carry no temperature
+/// assert!(fb.faults.stall());
+/// assert!(fb.crc_ok);
+/// assert!((fb.current_a + 2.0).abs() < 0.01);
+/// assert!((fb.position_deg - 113.9).abs() < 0.02);
+/// ```
+pub fn frame_drive_reply(
+    id: u8,
+    mode: Mode,
+    current_a: f32,
+    speed_rpm: i16,
+    position_deg: f32,
+    faults: Faults,
+) -> Frame {
+    let current = amps_to_raw(current_a).to_be_bytes();
+    let speed = speed_rpm.to_be_bytes();
+    reply_frame(
+        id,
+        mode,
+        current,
+        speed,
+        deg_to_raw(position_deg).to_be_bytes(),
+        faults,
+    )
+}
+
+/// Assemble a reply frame from its already-encoded parts and seal it with a
+/// correct CRC-8/MAXIM. Bytes 6–7 (`b67`) are the one part that differs
+/// between the two reply layouts.
+fn reply_frame(
+    id: u8,
+    mode: Mode,
+    current: [u8; 2],
+    speed: [u8; 2],
+    b67: [u8; 2],
+    faults: Faults,
+) -> Frame {
+    let mut f: Frame = [0; FRAME_LEN];
+    f[0] = id;
+    f[1] = mode.as_byte();
+    f[2] = current[0];
+    f[3] = current[1];
+    f[4] = speed[0];
+    f[5] = speed[1];
+    f[6] = b67[0];
+    f[7] = b67[1];
+    f[8] = faults.0;
+    f[9] = crc8_maxim(&f[..9]);
+    f
 }
 
 /// Strip a leading half-duplex TX echo from a raw reply.

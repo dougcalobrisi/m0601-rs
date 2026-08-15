@@ -10,9 +10,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use m0601::protocol::{
-    CUR_MAX, CUR_MIN, POS_MAX, ReplyKind, crc8_maxim, frame_brake, frame_current, frame_feedback,
-    frame_from_bytes, frame_id_query, frame_mode, frame_position, frame_set_id, frame_velocity,
-    parse_feedback, validate_id,
+    CUR_MAX, CUR_MIN, POS_MAX, ReplyKind, crc8_maxim, deg_to_raw8, frame_brake, frame_current,
+    frame_drive_reply, frame_feedback, frame_from_bytes, frame_id_query, frame_mode,
+    frame_position, frame_query_reply, frame_set_id, frame_velocity, parse_feedback, raw8_to_deg,
+    validate_id,
 };
 use m0601::{Error, Faults, Mode};
 
@@ -466,5 +467,73 @@ fn conversions_clamp_at_the_reachable_limits() {
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         assert_eq!(deg_to_raw(bad), 0);
         assert_eq!(amps_to_raw(bad), 0);
+    }
+}
+
+#[test]
+fn query_reply_builder_has_the_documented_layout() {
+    // Golden layout for `frame_query_reply`: id, mode byte, current (i16 BE),
+    // speed (i16 BE), temperature, 8-bit position, faults — then a CRC seal.
+    // current 1.0 A = 4096 raw = 0x1000; speed 100 = 0x0064; temp 40 = 0x28;
+    // 180° at ×255/360 = 127.5 → rounds to 128 = 0x80.
+    let q = frame_query_reply(0x01, Mode::Velocity, 1.0, 100, 40, 180.0, Faults(0));
+    let expect9 = [0x01u8, 0x02, 0x10, 0x00, 0x00, 0x64, 0x28, 0x80, 0x00];
+    assert_eq!(q[..9], expect9, "query-reply bytes 0-8");
+    // Byte 9 is a real CRC-8/MAXIM seal (crc8_maxim is independently anchored).
+    assert_eq!(q[9], crc8_maxim(&q[..9]), "byte 9 seals bytes 0-8");
+}
+
+#[test]
+fn reply_builders_are_the_inverse_of_parse_feedback() {
+    // Query reply round-trips through parse_feedback as ReplyKind::Query.
+    let q = frame_query_reply(0x01, Mode::Velocity, 1.0, 100, 40, 180.0, Faults(0));
+    let fb = parse_feedback(&q, ReplyKind::Query).expect("valid frame");
+    assert!(fb.crc_ok, "builder emits a correct CRC");
+    assert_eq!(fb.id, 0x01);
+    assert_eq!(fb.mode, Some(Mode::Velocity));
+    assert_eq!(fb.speed_rpm, 100);
+    assert_eq!(fb.temp_c, Some(40));
+    assert_eq!(fb.faults, Faults(0));
+    assert!(
+        (fb.current_a - 1.0).abs() < 0.01,
+        "current within one raw step"
+    );
+    assert!(
+        (fb.position_deg - 180.0).abs() < 1.5,
+        "coarse 8-bit position"
+    );
+
+    // Drive reply: no temperature, hi-res 16-bit position, negative signs, a
+    // fault bit set — round-trips as ReplyKind::Drive.
+    let d = frame_drive_reply(0x02, Mode::Current, -2.0, -50, 113.9, Faults(Faults::STALL));
+    assert_eq!(d[1], Mode::Current.as_byte(), "byte 1 is the mode value");
+    assert_eq!(d[8], Faults::STALL, "byte 8 carries the fault mask");
+    assert_eq!(d[9], crc8_maxim(&d[..9]));
+    let fb = parse_feedback(&d, ReplyKind::Drive).expect("valid frame");
+    assert!(fb.crc_ok);
+    assert_eq!(fb.id, 0x02);
+    assert_eq!(fb.temp_c, None, "a drive reply carries no temperature");
+    assert_eq!(fb.speed_rpm, -50);
+    assert!(fb.faults.stall());
+    assert!((fb.current_a + 2.0).abs() < 0.01);
+    assert!(
+        (fb.position_deg - 113.9).abs() < 0.02,
+        "hi-res 16-bit position"
+    );
+}
+
+#[test]
+fn deg_to_raw8_round_trips_and_clamps_like_deg_to_raw() {
+    assert_eq!(deg_to_raw8(0.0), 0);
+    assert_eq!(deg_to_raw8(360.0), 255);
+    // Every raw value read back by raw8_to_deg must encode back to itself.
+    for raw in [0u8, 1, 64, 128, 200, 255] {
+        assert_eq!(deg_to_raw8(raw8_to_deg(raw)), raw, "raw {raw} round-trips");
+    }
+    // Out of band saturates rather than wrapping; non-finite maps to 0.
+    assert_eq!(deg_to_raw8(-5.0), 0);
+    assert_eq!(deg_to_raw8(1_000.0), 255);
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(deg_to_raw8(bad), 0);
     }
 }
