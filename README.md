@@ -1,4 +1,4 @@
-# m0601-rs — M0601 hub motor library + CLI in Rust
+# m0601 — a Rust library + CLI for the DFRobot M0601 hub motor
 
 A reusable driver crate ([`m0601/`](m0601)) and a CLI
 ([`m0601-cli/`](m0601-cli), binary `m0601`) for the DFRobot **M0601**
@@ -49,8 +49,8 @@ tested platform; the serial layer is portable, but the `/dev/ttyUSB0` paths
 and the `dialout` group below are Linux-specific.
 
 ```sh
-git clone https://github.com/dougcalobrisi/m0601-rs-test.git
-cd m0601-rs-test
+git clone https://github.com/dougcalobrisi/m0601-rs.git
+cd m0601-rs
 cargo build --release              # binary at target/release/m0601
 cargo install --path m0601-cli     # or install `m0601` into ~/.cargo/bin
 ```

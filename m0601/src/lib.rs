@@ -159,7 +159,7 @@
 //! sources (every other `PROTOCOL.md` mention in these docs points there).
 //! Primary materials:
 //!
-//! [`PROTOCOL.md`]: https://github.com/dougcalobrisi/m0601-rs-test/blob/main/PROTOCOL.md
+//! [`PROTOCOL.md`]: https://github.com/dougcalobrisi/m0601-rs/blob/main/PROTOCOL.md
 //!
 //! - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
 //! - [DDT M0601C-111 vendor sample](https://github.com/tech-life-hacking/DDT_M0601C_111)

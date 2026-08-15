@@ -16,8 +16,8 @@ older toolchains won't compile it. Linux is the tested platform; the serial laye
 is portable, but the device paths and the `dialout` group below are Linux-isms.
 
 ```sh
-git clone https://github.com/dougcalobrisi/m0601-rs-test.git
-cd m0601-rs-test
+git clone https://github.com/dougcalobrisi/m0601-rs.git
+cd m0601-rs
 cargo build --release              # binary at target/release/m0601
 cargo install --path m0601-cli     # or drop `m0601` into ~/.cargo/bin
 ```

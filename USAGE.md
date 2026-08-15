@@ -1,4 +1,4 @@
-# Using m0601-rs — CLI and library guide
+# Using m0601 — CLI and library guide
 
 Practical guide to driving the DFRobot M0601 hub motor with this repo.
 Companion documents:
@@ -230,7 +230,7 @@ Depend on the crate by git:
 
 ```toml
 [dependencies]
-m0601 = { git = "https://github.com/dougcalobrisi/m0601-rs-test.git" }
+m0601 = { git = "https://github.com/dougcalobrisi/m0601-rs.git" }
 ```
 
 Pin to a known-good state with `rev = "<sha>"`, `tag = "..."`, or
@@ -241,7 +241,7 @@ Or, working from a local checkout:
 
 ```toml
 [dependencies]
-m0601 = { path = "../m0601-rs-test/m0601" }
+m0601 = { path = "../m0601-rs/m0601" }
 ```
 
 ### Query without moving anything

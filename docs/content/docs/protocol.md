@@ -212,7 +212,7 @@ Position mode is single-turn absolute (the 4096-line encoder underlies the
 ## Known contradictions
 
 Resolved and unresolved disagreements between the sources are documented in full
-in [`PROTOCOL.md`](https://github.com/dougcalobrisi/m0601-rs-test/blob/main/PROTOCOL.md#known-contradictions-between-sources)
+in [`PROTOCOL.md`](https://github.com/dougcalobrisi/m0601-rs/blob/main/PROTOCOL.md#known-contradictions-between-sources)
 in the repo. In brief: reply CRC is real but treated as advisory; the accel byte
 is byte 6 (not 4); the set-ID frame carries no CRC; the ≥50 Hz floor is
 empirical; mode-switch/set-ID are sent 5×; and the accel byte's *unit* (rate vs

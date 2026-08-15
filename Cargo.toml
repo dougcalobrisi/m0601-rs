@@ -9,7 +9,7 @@ edition = "2024"
 # loops; those are stable from 1.88, which is above edition 2024's own 1.85.
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/dougcalobrisi/m0601-rs-test"
+repository = "https://github.com/dougcalobrisi/m0601-rs"
 
 [workspace.dependencies]
 # The `version` is required for publishing: `cargo publish` strips the `path`

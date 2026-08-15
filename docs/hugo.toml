@@ -1,8 +1,8 @@
 # Hugo config for the m0601 documentation site.
 #
-# Served at a GitHub Pages *project* sub-path, so baseURL carries /m0601-rs-test/.
+# Served at a GitHub Pages *project* sub-path, so baseURL carries /m0601-rs/.
 # `hugo server` overrides baseURL locally, so previews work regardless.
-baseURL = 'https://dougcalobrisi.github.io/m0601-rs-test/'
+baseURL = 'https://dougcalobrisi.github.io/m0601-rs/'
 title = 'm0601 — RS485 hub motor driver'
 theme = 'hugo-book'
 
@@ -24,7 +24,7 @@ disablePathToLower = true
   BookToC = true
   BookLogo = ''
   # "Edit this page" + repo links point at the real remote.
-  BookRepo = 'https://github.com/dougcalobrisi/m0601-rs-test'
+  BookRepo = 'https://github.com/dougcalobrisi/m0601-rs'
   BookEditPath = 'edit/main/docs/content'
   BookDateFormat = 'January 2, 2006'
   BookSearch = true

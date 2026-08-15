@@ -17,7 +17,7 @@ By git:
 
 ```toml
 [dependencies]
-m0601 = { git = "https://github.com/dougcalobrisi/m0601-rs-test.git" }
+m0601 = { git = "https://github.com/dougcalobrisi/m0601-rs.git" }
 ```
 
 Pin to something reproducible with `rev`, `tag`, or `branch` (defaults to `main`);
@@ -25,7 +25,7 @@ Pin to something reproducible with `rev`, `tag`, or `branch` (defaults to `main`
 
 ```toml
 [dependencies]
-m0601 = { path = "../m0601-rs-test/m0601" }
+m0601 = { path = "../m0601-rs/m0601" }
 ```
 
 ## The shape of the API
