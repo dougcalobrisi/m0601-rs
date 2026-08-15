@@ -23,8 +23,8 @@ use crate::cmd::{CYCLE, REPLY_WAIT, next_deadline};
 
 /// Thread entry point. Runs the loop, then unconditionally stops the motor
 /// — whether the loop ended by flag or by panicking.
-pub fn run(mut motor: M0601, shared: Arc<Shared>) {
-    let result = catch_unwind(AssertUnwindSafe(|| poll_loop(&mut motor, &shared)));
+pub fn run(mut motor: M0601, shared: Arc<Shared>, accel: u8) {
+    let result = catch_unwind(AssertUnwindSafe(|| poll_loop(&mut motor, &shared, accel)));
     if result.is_err() {
         // Clear `running` BEFORE the ~300 ms stop sequence, not after. The
         // panic hook has already restored the terminal by this point, so a
@@ -39,20 +39,25 @@ pub fn run(mut motor: M0601, shared: Arc<Shared>) {
     }
 }
 
-fn active_frame(id: u8, cmd: &CmdState) -> Frame {
+fn active_frame(id: u8, cmd: &CmdState, accel: u8) -> Frame {
     match cmd.mode {
         Mode::Velocity if cmd.brake => frame_brake(id),
+        // `accel` is the operator-chosen ramp (default [`DEFAULT_DRIVE_ACCEL`],
+        // gentler than the motor's fastest `1`). A single keystroke here can
+        // command a large instantaneous step — F is a jump to the full preset
+        // from standstill, F→B is a ~2× swing — so a too-sharp ramp risks
+        // tripping the 3 A bus-overcurrent protection on a loaded wheel.
         Mode::Velocity => frame_velocity(
             id,
             cmd.target.clamp(RPM_MIN.into(), RPM_MAX.into()) as i16,
-            1,
+            accel,
         ),
         Mode::Current => frame_current(id, cmd.target.clamp(CUR_MIN.into(), CUR_MAX.into()) as i16),
         Mode::Position => frame_position(id, cmd.target.clamp(0, POS_MAX.into()) as u16),
     }
 }
 
-fn poll_loop(motor: &mut M0601, shared: &Shared) {
+fn poll_loop(motor: &mut M0601, shared: &Shared, accel: u8) {
     // Absolute deadlines: sleep until `next`, not `CYCLE` after variable
     // work — otherwise the reply wait would drag the loop below 50 Hz.
     let mut next = Instant::now() + CYCLE;
@@ -100,7 +105,7 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
         // query for it every 10th cycle would leave a 40 ms hole between
         // drive frames — 25 Hz instantaneous against a protocol floor of
         // 50 Hz — and the motor would coast a little every 200 ms.
-        let drive = active_frame(motor.id(), &cmd);
+        let drive = active_frame(motor.id(), &cmd, accel);
         match motor.transact(&drive, REPLY_WAIT) {
             Ok(Some(fb)) => lock(&shared.telemetry).absorb(fb),
             Ok(None) => {} // silent cycle — keep driving
@@ -130,6 +135,7 @@ fn poll_loop(motor: &mut M0601, shared: &Shared) {
 mod tests {
     use super::active_frame;
     use crate::cmd::CYCLE;
+    use crate::cmd::control::DEFAULT_DRIVE_ACCEL;
     use crate::cmd::control::state::CmdState;
     use m0601::Mode;
     use m0601::protocol::DRIVE_HZ_MIN;
@@ -142,6 +148,12 @@ mod tests {
             brake,
             mode_request: None,
         }
+    }
+
+    /// `active_frame` at the motor's fastest ramp — the accel the literal
+    /// wire vectors below were captured with (byte 6 == 0x01 for velocity).
+    fn frame(id: u8, cmd: &CmdState) -> super::Frame {
+        super::active_frame(id, cmd, 1)
     }
 
     #[test]
@@ -161,15 +173,15 @@ mod tests {
         // Literal wire bytes — recomputing these with the frame builders
         // would assert the builders against themselves.
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Velocity, 100, false)),
+            frame(0x01, &cmd(Mode::Velocity, 100, false)),
             [0x01, 0x64, 0x00, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0xE4]
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Current, 4096, false)),
+            frame(0x01, &cmd(Mode::Current, 4096, false)),
             [0x01, 0x64, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB]
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Position, 16_384, false)),
+            frame(0x01, &cmd(Mode::Position, 16_384, false)),
             [0x01, 0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97]
         );
     }
@@ -180,17 +192,17 @@ mod tests {
         // set there must not suppress the real setpoint — the wheel would
         // coast while the dashboard said BRAKING.
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Velocity, 100, true)),
+            frame(0x01, &cmd(Mode::Velocity, 100, true)),
             [0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1],
             "velocity + brake must send the brake frame"
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Current, 4096, true)),
+            frame(0x01, &cmd(Mode::Current, 4096, true)),
             [0x01, 0x64, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB],
             "a stale brake flag must not replace the current setpoint"
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Position, 16_384, true)),
+            frame(0x01, &cmd(Mode::Position, 16_384, true)),
             [0x01, 0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97],
             "a stale brake flag must not replace the position setpoint"
         );
@@ -206,7 +218,7 @@ mod tests {
         // then floors to POS_MAX, putting a full 360 deg on the wire in
         // place of 0.
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Position, -5, false)),
+            frame(0x01, &cmd(Mode::Position, -5, false)),
             [0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50],
             "a negative position must clamp to 0, not land on a full turn"
         );
@@ -214,16 +226,16 @@ mod tests {
         // flips the sign and commands near-full-scale torque the *other*
         // way. Nothing downstream catches that — -31073 is in range.
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Current, 99_999, false)),
+            frame(0x01, &cmd(Mode::Current, 99_999, false)),
             [0x01, 0x64, 0x7F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97],
             "an over-range current must saturate, not wrap to full reverse"
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Current, -99_999, false)),
+            frame(0x01, &cmd(Mode::Current, -99_999, false)),
             [0x01, 0x64, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0]
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Position, 99_999, false)),
+            frame(0x01, &cmd(Mode::Position, 99_999, false)),
             [0x01, 0x64, 0x7F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x97]
         );
         // Velocity is belt-and-braces: 5000 fits in i16, so the cast cannot
@@ -231,18 +243,35 @@ mod tests {
         // two pin the behaviour but would still pass with the clamp gone —
         // they document intent, they do not guard it.
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Velocity, 5_000, false)),
+            frame(0x01, &cmd(Mode::Velocity, 5_000, false)),
             [0x01, 0x64, 0x01, 0x4A, 0x00, 0x00, 0x01, 0x00, 0x00, 0x7C]
         );
         assert_eq!(
-            active_frame(0x01, &cmd(Mode::Velocity, -5_000, false)),
+            frame(0x01, &cmd(Mode::Velocity, -5_000, false)),
             [0x01, 0x64, 0xFE, 0xB6, 0x00, 0x00, 0x01, 0x00, 0x00, 0x75]
         );
     }
 
     #[test]
     fn the_frame_is_addressed_to_the_handles_own_motor() {
-        assert_eq!(active_frame(0x2A, &cmd(Mode::Velocity, 0, false))[0], 0x2A);
-        assert_eq!(active_frame(0x2A, &cmd(Mode::Velocity, 0, true))[0], 0x2A);
+        assert_eq!(frame(0x2A, &cmd(Mode::Velocity, 0, false))[0], 0x2A);
+        assert_eq!(frame(0x2A, &cmd(Mode::Velocity, 0, true))[0], 0x2A);
+    }
+
+    #[test]
+    fn the_accel_byte_reaches_the_wire_in_velocity_mode() {
+        // Byte 6 is the ramp. It must carry the operator's chosen accel, not
+        // a hardcoded value — a keystroke here commands a large instantaneous
+        // step, so the ramp is what keeps the current spike under the trip.
+        let f = active_frame(0x01, &cmd(Mode::Velocity, 100, false), DEFAULT_DRIVE_ACCEL);
+        assert_eq!(f[6], DEFAULT_DRIVE_ACCEL);
+        assert_eq!(active_frame(0x01, &cmd(Mode::Velocity, 100, false), 7)[6], 7);
+        // The default is gentler than the motor's fastest ramp (1).
+        const _: () = assert!(DEFAULT_DRIVE_ACCEL > 1);
+        // Non-velocity frames have no accel byte and ignore the parameter.
+        assert_eq!(
+            active_frame(0x01, &cmd(Mode::Current, 4096, false), 7),
+            active_frame(0x01, &cmd(Mode::Current, 4096, false), 1),
+        );
     }
 }

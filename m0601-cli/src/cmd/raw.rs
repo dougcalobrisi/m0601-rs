@@ -30,38 +30,66 @@ fn hex_upper(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-pub fn run(port: &str, id: u8, timeout: Duration, hex: &str) -> m0601::Result<ExitCode> {
+/// The command byte (frame byte 1) of a frame that can put the motor in
+/// motion: `0x64` drives, `0xA0` switches mode. Feedback (`0x74`) and the
+/// special unaddressed frames cannot, so they need no `--yes`.
+fn is_motion_command(frame: &Frame) -> bool {
+    matches!(frame[1], 0x64 | 0xA0)
+}
+
+pub fn run(port: &str, id: u8, timeout: Duration, hex: &str, yes: bool) -> m0601::Result<ExitCode> {
     let frame = match parse_hex_frame(hex) {
         Ok(f) => f,
         Err(msg) => {
-            println!("[x] {msg}");
+            eprintln!("[x] {msg}");
             return Ok(ExitCode::FAILURE);
         }
     };
+
+    // `raw` has none of `drive`'s rails (StopGuard, position-entry check), so
+    // gate the two command bytes that can move the wheel behind --yes. Note
+    // --id does not alter the literal bytes: byte 0 is whatever was typed.
+    let motion = is_motion_command(&frame);
+    if motion && !yes {
+        eprintln!(
+            "[x] {} is a motion command (byte 1 = 0x{:02X}); pass --yes to send it.",
+            hex_upper(&frame),
+            frame[1]
+        );
+        eprintln!("    It can move the motor and `raw` has no stop guard.");
+        return Ok(ExitCode::FAILURE);
+    }
 
     let mut motor = M0601::open(port, id, timeout)?;
     println!("TX: {}", hex_upper(&frame));
     let resp = motor.send_raw(&frame, timeout.max(Duration::from_millis(200)))?;
     if resp.is_empty() {
         println!("RX: (no response)");
-        return Ok(ExitCode::SUCCESS);
+    } else {
+        println!("RX: {}", hex_upper(&resp));
+        // The reply layout depends on the command that was sent: only decode
+        // when the TX frame is one that elicits telemetry, using its layout.
+        if let Some(fb) = ReplyKind::from_tx(&frame).and_then(|kind| parse_feedback(&resp, kind)) {
+            let temp = fb
+                .temp_c
+                .map_or_else(|| "--".to_owned(), |t| format!("{t}C"));
+            println!(
+                "    decoded -> mode {}, {} RPM, {:.3} A, {:.1} deg, temp {temp}, err {}",
+                fb.mode_name(),
+                fb.speed_rpm,
+                fb.current_a,
+                fb.position_deg,
+                fb.faults
+            );
+        }
     }
 
-    println!("RX: {}", hex_upper(&resp));
-    // The reply layout depends on the command that was sent: only decode
-    // when the TX frame is one that elicits telemetry, using its layout.
-    if let Some(fb) = ReplyKind::from_tx(&frame).and_then(|kind| parse_feedback(&resp, kind)) {
-        let temp = fb
-            .temp_c
-            .map_or_else(|| "--".to_owned(), |t| format!("{t}C"));
-        println!(
-            "    decoded -> mode {}, {} RPM, {:.3} A, {:.1} deg, temp {temp}, err {}",
-            fb.mode_name(),
-            fb.speed_rpm,
-            fb.current_a,
-            fb.position_deg,
-            fb.faults
-        );
+    // A single drive frame coasts by protocol, but a current-mode frame is a
+    // torque impulse; a mode switch leaves the motor armed. Brake on the way
+    // out so `raw` never exits having nudged the wheel into a live state.
+    if motion {
+        motor.safe_stop();
+        println!("(motion frame — braked on exit)");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -99,5 +127,15 @@ mod tests {
     #[test]
     fn bad_hex_rejected() {
         assert!(parse_hex_frame("01 74 00 00 00 00 00 00 GG").is_err());
+    }
+
+    #[test]
+    fn motion_commands_are_recognised_by_byte_1() {
+        use super::is_motion_command;
+        // 0x64 drive, 0xA0 mode switch → gated behind --yes.
+        assert!(is_motion_command(&parse_hex_frame("01 64 00 64 00 00 01 00 00").unwrap()));
+        assert!(is_motion_command(&parse_hex_frame("01 A0 00 00 00 00 00 00 01").unwrap()));
+        // 0x74 feedback query → read-only, no gate.
+        assert!(!is_motion_command(&parse_hex_frame("01 74 00 00 00 00 00 00 00").unwrap()));
     }
 }

@@ -23,12 +23,13 @@ struct Cli {
     #[arg(long, global = true, default_value = "/dev/ttyUSB0")]
     port: String,
 
-    /// Motor ID, e.g. 0x01
-    #[arg(long, global = true, default_value = "0x01", value_parser = parse_int_auto)]
+    /// Motor ID 0x01..0xFE, e.g. 0x01 (ignored by `scan`, which probes all)
+    #[arg(long, global = true, default_value = "0x01", value_parser = parse_id)]
     id: u8,
 
-    /// Serial read timeout in seconds
-    #[arg(long, global = true, default_value_t = 0.15, value_parser = parse_seconds)]
+    /// Serial read timeout in seconds (reply window for one-shot reads;
+    /// the 50 Hz drive/control loops use their own fixed 6 ms wait)
+    #[arg(long, global = true, default_value_t = 0.15, value_parser = parse_timeout)]
     timeout: f64,
 
     #[command(subcommand)]
@@ -59,6 +60,11 @@ enum Cmd {
         /// Preset speed for F/B keys, -330..=330
         #[arg(long, default_value_t = 100, value_parser = parse_rpm, allow_hyphen_values = true)]
         rpm: i16,
+        /// Velocity ramp: 1 = fastest, larger = gentler, 0 = motor default.
+        /// Default is gentler than 1 so a keystroke's large step is less
+        /// likely to trip the motor's overcurrent protection on a loaded wheel.
+        #[arg(long, default_value_t = cmd::control::DEFAULT_DRIVE_ACCEL)]
+        accel: u8,
     },
     /// Drive one mode at a fixed setpoint (scriptable; Ctrl-C or --secs stops)
     Drive {
@@ -68,7 +74,7 @@ enum Cmd {
     /// Change a motor's RS485 ID (persistent, one motor only)
     SetId {
         /// New ID 0x01..0xFE
-        #[arg(long, value_parser = parse_int_auto)]
+        #[arg(long, value_parser = parse_id)]
         new: u8,
         /// Skip confirmation prompt
         #[arg(long)]
@@ -78,6 +84,10 @@ enum Cmd {
     Raw {
         /// Hex bytes, e.g. "01 74 00 00 00 00 00 00 00"
         hex: String,
+        /// Required to send a drive (0x64) or mode-switch (0xA0) frame — the
+        /// two commands that can move the motor.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -132,6 +142,27 @@ fn parse_seconds(s: &str) -> Result<f64, String> {
     }
     if !(0.0..=3600.0).contains(&v) {
         return Err(format!("{v} is out of range (0..=3600 seconds)"));
+    }
+    Ok(v)
+}
+
+/// The smallest serial reply window that still gives a healthy motor time to
+/// answer. `--timeout` doubles as this window, and `0` would leave only the
+/// ~0.9 ms wire time — turning every read into a false "no response" (a false
+/// "No motors found" from `scan`, a false "no motor detected" gating `set-id`).
+const MIN_TIMEOUT_SECS: f64 = 0.005;
+
+/// The global `--timeout`: a finite reply window with a small positive floor.
+///
+/// Distinct from [`parse_seconds`] (which allows `0`, meaningful for a
+/// `--secs` run duration) precisely because here `0` is never useful and is
+/// actively misleading — see [`MIN_TIMEOUT_SECS`].
+fn parse_timeout(s: &str) -> Result<f64, String> {
+    let v = parse_seconds(s)?;
+    if v < MIN_TIMEOUT_SECS {
+        return Err(format!(
+            "{v} is too small; --timeout must be at least {MIN_TIMEOUT_SECS} s"
+        ));
     }
     Ok(v)
 }
@@ -196,6 +227,16 @@ fn parse_deg(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
+/// A motor RS485 ID: an [`parse_int_auto`] value in the assignable range
+/// `0x01..=0xFE`. Validating at the clap boundary turns `--id 0x00`/`0xFF`
+/// into a clean usage error instead of a driver error at port-open time.
+fn parse_id(s: &str) -> Result<u8, String> {
+    let v = parse_int_auto(s)?;
+    m0601::protocol::validate_id(v)
+        .map_err(|_| format!("id 0x{v:02X} is out of range (0x01..=0xFE)"))?;
+    Ok(v)
+}
+
 /// `int(s, 0)` equivalent: `0x`/`0o`/`0b` prefixes or plain decimal.
 fn parse_int_auto(s: &str) -> Result<u8, String> {
     let s = s.trim();
@@ -218,7 +259,7 @@ fn main() -> ExitCode {
         Cmd::Scan { full } => cmd::scan::run(&cli.port, timeout, full),
         Cmd::Info => cmd::info::run(&cli.port, cli.id, timeout),
         Cmd::Monitor { hz, csv } => cmd::monitor::run(&cli.port, cli.id, timeout, hz, csv),
-        Cmd::Control { rpm } => cmd::control::run(&cli.port, cli.id, rpm),
+        Cmd::Control { rpm, accel } => cmd::control::run(&cli.port, cli.id, rpm, accel),
         Cmd::Drive { mode } => {
             let plan = match mode {
                 DriveMode::Velocity { rpm, accel, secs } => cmd::drive::Plan {
@@ -241,7 +282,7 @@ fn main() -> ExitCode {
             cmd::drive::run(&cli.port, cli.id, timeout, plan)
         }
         Cmd::SetId { new, yes } => cmd::set_id::run(&cli.port, timeout, new, yes),
-        Cmd::Raw { hex } => cmd::raw::run(&cli.port, cli.id, timeout, &hex),
+        Cmd::Raw { hex, yes } => cmd::raw::run(&cli.port, cli.id, timeout, &hex, yes),
     };
 
     match result {
@@ -261,8 +302,35 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_hz, parse_int_auto, parse_rpm, parse_seconds};
+    use super::{parse_hz, parse_id, parse_int_auto, parse_rpm, parse_seconds, parse_timeout};
     use std::time::Duration;
+
+    #[test]
+    fn id_rejects_the_unassignable_ends_of_the_range() {
+        // 0x00 and 0xFF are not assignable motor IDs; reject at the boundary.
+        assert!(parse_id("0x00").is_err());
+        assert!(parse_id("0").is_err());
+        assert!(parse_id("0xFF").is_err());
+        assert!(parse_id("255").is_err());
+        assert_eq!(parse_id("0x01"), Ok(0x01));
+        assert_eq!(parse_id("0xFE"), Ok(0xFE));
+        assert_eq!(parse_id("42"), Ok(42));
+    }
+
+    #[test]
+    fn timeout_rejects_zero_and_too_small_but_keeps_secs_permissive() {
+        // The global --timeout is the serial reply window: 0 (or a sub-ms
+        // value) turns every read into a false "no response".
+        assert!(parse_timeout("0").is_err());
+        assert!(parse_timeout("0.0").is_err());
+        assert!(parse_timeout("0.001").is_err());
+        assert!(parse_timeout("inf").is_err());
+        assert_eq!(parse_timeout("0.15"), Ok(0.15));
+        assert_eq!(parse_timeout("0.005"), Ok(0.005));
+        // --secs keeps using parse_seconds, where 0 ("stop immediately") is
+        // legitimate — the floor must not have leaked into it.
+        assert_eq!(parse_seconds("0"), Ok(0.0));
+    }
 
     #[test]
     fn rejects_non_finite_seconds_that_would_panic_duration() {

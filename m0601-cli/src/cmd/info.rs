@@ -22,8 +22,10 @@ pub fn run(port: &str, id: u8, timeout: Duration) -> m0601::Result<ExitCode> {
     println!("{}", "-".repeat(48));
 
     let Some(fb) = motor.query()? else {
-        println!("  Live readout  : no valid response.");
-        println!("  Check 18V power, wiring (brown->GND), A/B polarity, and --id.");
+        // Diagnostics go to stderr so `m0601 info > log.txt` captures only the
+        // real readout, not this failure notice.
+        eprintln!("  Live readout  : no valid response.");
+        eprintln!("  Check 18V power, wiring (brown->GND), A/B polarity, and --id.");
         return Ok(ExitCode::FAILURE);
     };
 

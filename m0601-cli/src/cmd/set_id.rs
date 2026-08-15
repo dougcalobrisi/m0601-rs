@@ -21,6 +21,7 @@ pub fn run(port: &str, timeout: Duration, new_id: u8, yes: bool) -> m0601::Resul
     println!("  Port: {port}  ->  New ID: 0x{new_id:02X} ({new_id})");
     println!("{bar}");
     println!("  WARNING: only ONE motor may be on the bus. ID is persistent.");
+    println!("  Do not connect another motor between this check and the write.");
 
     // The set-ID frame is unaddressed: every motor that hears it takes the
     // new ID. A broadcast (stage-1) scan cannot tell one motor from several
@@ -28,19 +29,21 @@ pub fn run(port: &str, timeout: Duration, new_id: u8, yes: bool) -> m0601::Resul
     // real if we poll every ID individually. Slow, but this writes
     // persistent state that is tedious to undo.
     let bus = Bus::open(port, timeout)?;
-    print!("  Checking the bus is not shared (polling all 254 IDs)... ");
-    std::io::stdout().flush()?;
-    let ids = bus.scan(0x01..=0xFE, |_| {})?.ids;
-    println!("done.");
+    // ~40 s to poll all 254 IDs — show the same progress bar as `scan` rather
+    // than freezing silently (an unfed progress line invites a mid-scan kill).
+    let range = 0x01..=0xFE;
+    println!("  Checking the bus is not shared (polling all 254 IDs):");
+    let ids = bus.scan(range.clone(), super::scan::progress_bar(&range))?.ids;
+    super::scan::clear_progress();
     let current = match ids.as_slice() {
         [] => {
-            println!("[x] No motor detected. Check power/wiring.");
+            eprintln!("[x] No motor detected. Check power/wiring.");
             return Ok(ExitCode::FAILURE);
         }
         [one] => *one,
         many => {
             let listed: Vec<String> = many.iter().map(|i| format!("0x{i:02X}")).collect();
-            println!(
+            eprintln!(
                 "[x] Multiple motors detected [{}]. Disconnect all but one.",
                 listed.join(", ")
             );
@@ -65,13 +68,13 @@ pub fn run(port: &str, timeout: Duration, new_id: u8, yes: bool) -> m0601::Resul
             Ok(ExitCode::SUCCESS)
         }
         Some(reported) => {
-            println!(
+            eprintln!(
                 "[x] Motor reports 0x{reported:02X} — change may have failed. Try power-cycling."
             );
             Ok(ExitCode::FAILURE)
         }
         None => {
-            println!("[?] No response after change. Power-cycle and run 'scan' to confirm.");
+            eprintln!("[?] No response after change. Power-cycle and run 'scan' to confirm.");
             Ok(ExitCode::FAILURE)
         }
     }

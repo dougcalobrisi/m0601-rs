@@ -66,7 +66,7 @@ Global flags work before or after the subcommand:
 |---|---|---|
 | `--port` | `/dev/ttyUSB0` | serial port |
 | `--id` | `0x01` | motor RS485 ID (hex `0x01` or decimal `1`) |
-| `--timeout` | `0.15` | reply wait in seconds (0-3600). Governs `scan`/`info`/`monitor`/`set-id`; `raw` raises it to a 200 ms floor, and in `drive` it covers the port open and the position pre-flight check only — both 50 Hz loops use a fixed 6 ms wait |
+| `--timeout` | `0.15` | reply wait in seconds (0.005–3600; a smaller value would turn every read into a false "no response"). Governs `scan`/`info`/`monitor`/`set-id`; `raw` raises it to a 200 ms floor, and in `drive` it covers the port open and the position pre-flight check only — both 50 Hz loops use a fixed 6 ms wait |
 
 ### `scan` — who's on the bus?
 
@@ -130,7 +130,8 @@ reported and polling continues.
 ### `control` — interactive drive
 
 ```sh
-m0601 control --rpm 100     # full-screen keyboard control
+m0601 control --rpm 100            # full-screen keyboard control
+m0601 control --rpm 100 --accel 1  # snappier (fastest) ramp; --accel 0 = motor default
 ```
 
 | Key | Action |
@@ -145,6 +146,16 @@ m0601 control --rpm 100     # full-screen keyboard control
 
 Notes on behavior you'll actually notice:
 
+- **It latches — releasing a key does not stop the wheel.** `F`/`B`/`1`–`5`
+  set a *sustained* setpoint that holds until you press `S`, `K`, `Q`, or a
+  signal arrives. Do not walk away from a spinning wheel expecting it to stop
+  on its own; it stops only on those keys or when the host stops polling
+  (crash / unplug / power loss, which coasts it per protocol).
+- **`--accel`** sets the velocity ramp for active driving (default `3`, gentler
+  than the motor's fastest `1`). A keystroke here commands a large step — `F`
+  is a jump to the full preset, `F`→`B` a full reversal — so the gentler
+  default keeps the current spike under the 3 A overcurrent trip on a loaded
+  wheel. This is the *drive* ramp; the *stop* ramp is separate (below).
 - `P` (position mode) is refused at 10 RPM or above (protocol constraint) and
   when no telemetry has arrived — an unknown speed is not zero. Entering
   position mode holds the wheel's *current* angle; it never jumps to 0°.
@@ -216,13 +227,20 @@ ID persists across power cycles. Avoid `0xC8` (the broadcast address).
 ### `raw` — protocol probing
 
 ```sh
-m0601 raw "01 74 00 00 00 00 00 00 00"       # 9 bytes: CRC appended
-m0601 raw "01 74 00 00 00 00 00 00 00 FF"    # 10 bytes: sent verbatim
+m0601 raw "01 74 00 00 00 00 00 00 00"           # 9 bytes: CRC appended
+m0601 raw "01 74 00 00 00 00 00 00 00 FF"        # 10 bytes: sent verbatim
+m0601 raw --yes "01 64 00 64 00 00 03 00 00"     # a drive frame needs --yes
 ```
 
 Prints TX and RX in hex and, when the sent command elicits telemetry,
 decodes the reply using the correct layout for that command. Accepts
 spaces or commas and optional `0x` prefixes.
+
+`raw` has none of `drive`'s safety rails, so the two command bytes that can
+move the wheel — `0x64` (drive) and `0xA0` (mode switch) — require `--yes`,
+and `raw` brakes the motor on exit after sending one. Note that `--id` only
+opens the handle; it does **not** alter the literal bytes you type (byte 0 is
+the address on the wire).
 
 ## Library
 

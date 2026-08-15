@@ -13,8 +13,7 @@
 
 use std::io::{self, Write};
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use m0601::protocol::{
@@ -29,6 +28,10 @@ use crate::cmd::{CYCLE, POSITION_ENTRY_RPM, REPLY_WAIT, next_deadline};
 const TEMP_EVERY: u64 = 10;
 /// Redraw the status line every Nth cycle (~10 Hz), not every drive frame.
 const DRAW_EVERY: u64 = 5;
+/// Give up after this many *consecutive* transact errors (~1 s at 50 Hz). A
+/// hard I/O error every cycle for a whole second means the adapter is gone,
+/// not a transient RS485 hiccup (those surface as `Ok(None)`, not `Err`).
+const MAX_CONSECUTIVE_ERRORS: u32 = 50;
 
 /// A fully-resolved setpoint in the motor's own wire units. Friendly units
 /// (amps, degrees) are converted at the CLI boundary by
@@ -81,6 +84,12 @@ fn drive_frame(id: u8, sp: &Setpoint) -> Frame {
 /// error, Ctrl-C, and panic. Holds a cheap clone of the handle (both share
 /// the one bus) so [`Drop`] can stop the motor without entangling the loop's
 /// borrow of the original.
+///
+/// The panic guarantee depends on unwinding: with `panic = "abort"` in the
+/// release profile this `Drop` would not run on a panic (the interactive
+/// `control` poll thread instead wraps its loop in `catch_unwind`). The
+/// workspace release profile does not set `abort`; keep it that way, or move
+/// this loop under `catch_unwind` too, so the promise above holds.
 struct StopGuard {
     motor: M0601,
 }
@@ -122,12 +131,12 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
         if !crate::cmd::position_entry_allowed(speed) {
             match speed {
                 None => {
-                    println!(
+                    eprintln!(
                         "[x] Refused: no telemetry — cannot confirm the wheel is under {POSITION_ENTRY_RPM} RPM."
                     );
-                    println!("    Check 18 V power, wiring (brown → GND), A/B polarity, and --id.");
+                    eprintln!("    Check 18 V power, wiring (brown → GND), A/B polarity, and --id.");
                 }
-                Some(rpm) => println!(
+                Some(rpm) => eprintln!(
                     "[x] Refused: {rpm} RPM — must be under {POSITION_ENTRY_RPM} RPM to enter POSITION mode."
                 ),
             }
@@ -141,15 +150,16 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
         motor: motor.clone(),
     };
 
-    let running = Arc::new(AtomicBool::new(true));
-    {
-        let running = running.clone();
-        if let Err(e) = ctrlc::set_handler(move || running.store(false, Ordering::Relaxed)) {
-            eprintln!(
-                "[!] could not install signal handler ({e}); a SIGTERM/SIGHUP will coast the \
-                 motor rather than brake it. Ctrl-C from the terminal still stops it."
-            );
-        }
+    let (running, handler) = crate::cmd::install_stop_flag();
+    if let Err(e) = handler {
+        // Without the handler, no signal — Ctrl-C included — unwinds through
+        // StopGuard, so any signal terminates the process outright and the
+        // motor coasts to a stop instead of braking. A timed run (--secs) that
+        // completes on its own still exits the loop normally and brakes.
+        eprintln!(
+            "[!] could not install signal handler ({e}); a signal (Ctrl-C, SIGTERM, SIGHUP) \
+             will now coast the motor rather than brake it. --secs still brakes on completion."
+        );
     }
 
     // Establish the mode (5× 0xA0), then hold the setpoint at 50 Hz.
@@ -163,6 +173,7 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
     let mut last_fb: Option<Feedback> = None;
     let mut last_temp: Option<u8> = None;
     let mut cycle: u64 = 0;
+    let mut errors = 0u32;
     let mut next = Instant::now() + CYCLE;
 
     while running.load(Ordering::Relaxed) {
@@ -174,13 +185,29 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
 
         // The drive frame goes out EVERY cycle to hold the 50 Hz floor.
         match motor.transact(&frame, REPLY_WAIT) {
-            Ok(Some(fb)) => last_fb = Some(fb),
-            Ok(None) => {}
-            // A transient bus hiccup must not abort the run; the protocol
-            // coasts the motor if we truly go silent.
+            Ok(Some(fb)) => {
+                last_fb = Some(fb);
+                errors = 0;
+            }
+            Ok(None) => errors = 0,
+            // A transient bus hiccup must not abort the run — the protocol
+            // coasts the motor if we truly go silent — but a *persistent*
+            // error (adapter unplugged mid-run) should give up rather than
+            // spin forever claiming to drive. Dropping StopGuard on the way
+            // out still brakes if the wheel is somehow reachable.
             Err(e) => {
-                print!("\r[!] bus error: {e} (still driving)                    ");
-                let _ = io::stdout().flush();
+                errors += 1;
+                // Bus-error notices are diagnostics — to stderr, so a
+                // `drive ... 2>/dev/null` keeps only the live status stream.
+                if errors >= MAX_CONSECUTIVE_ERRORS {
+                    eprint!(
+                        "\r[x] bus error {errors}x: {e} — frames are not reaching the motor; stopping.\n"
+                    );
+                    let _ = io::stderr().flush();
+                    break;
+                }
+                eprint!("\r[!] bus error: {e} (retrying)                    ");
+                let _ = io::stderr().flush();
             }
         }
 

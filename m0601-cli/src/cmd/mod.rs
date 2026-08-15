@@ -1,5 +1,7 @@
 //! Subcommand implementations.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub mod control;
@@ -47,6 +49,21 @@ pub fn next_deadline(next: Instant) -> Instant {
     } else {
         advanced
     }
+}
+
+/// A shared run flag (initially `true`) plus a SIGINT/SIGTERM/SIGHUP handler
+/// that clears it. Shared by `drive` and `monitor`, which then poll the flag
+/// and exit their loops when a signal arrives.
+///
+/// The install result is returned rather than warned-about here, because the
+/// consequence of a failed handler differs by caller — a coasting motor for
+/// `drive`, a lost final CSV flush for `monitor` — so each prints its own
+/// message. The handler only does an atomic store; no I/O in signal context.
+pub fn install_stop_flag() -> (Arc<AtomicBool>, Result<(), ctrlc::Error>) {
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = running.clone();
+    let result = ctrlc::set_handler(move || flag.store(false, Ordering::Relaxed));
+    (running, result)
 }
 
 /// Whether the wheel is *confirmed* slow enough to switch into position mode.

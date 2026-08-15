@@ -206,11 +206,12 @@ pub(super) fn deg_to_raw(deg: f32) -> i32 {
 }
 
 fn quit(shared: &Shared) {
-    {
-        let mut cmd = lock(&shared.cmd);
-        cmd.target = 0;
-        cmd.brake = false;
-    }
+    // Do NOT touch `cmd.target` here. `safe_stop` (run by the poll thread's
+    // epilogue on the way out) already forces velocity mode, zeroes, and
+    // brakes, so zeroing the target is redundant in velocity/current — and in
+    // POSITION mode it is actively wrong: `target = 0` means "drive to 0°", so
+    // the poll loop could emit one frame_position(0) — a spurious lurch toward
+    // 0° — before it observes `running == false`. Just signal the stop.
     shared.set_msg("Quitting...");
     shared.running.store(false, Ordering::Relaxed);
 }
@@ -295,6 +296,29 @@ mod tests {
         );
         // It holds the reported angle instead.
         assert_eq!(target, deg_to_raw(128.0 * 360.0 / 255.0));
+    }
+
+    #[test]
+    fn quit_in_position_mode_does_not_command_a_move_to_zero() {
+        // Q must clear `running` without touching the setpoint: `safe_stop`
+        // does the stopping, and a `target = 0` here would mean "drive to 0°"
+        // for the one frame before the poll loop notices `running == false`.
+        use std::sync::atomic::Ordering;
+        let shared = Shared::new();
+        lock(&shared.cmd).mode = Mode::Position;
+        lock(&shared.cmd).target = 20_000;
+
+        press(&shared, 'q');
+
+        assert_eq!(
+            lock(&shared.cmd).target,
+            20_000,
+            "quit must not rewrite the position setpoint to a move-to-0° command"
+        );
+        assert!(
+            !shared.running.load(Ordering::Relaxed),
+            "quit must signal the stop"
+        );
     }
 
     #[test]

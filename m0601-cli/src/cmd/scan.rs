@@ -43,14 +43,15 @@ pub fn run(port: &str, timeout: Duration, full: bool) -> m0601::Result<ExitCode>
     };
 
     if report.ids.is_empty() {
-        println!("\nNo motors found.");
-        println!(
+        // Failure diagnostics to stderr; only found-motor lines are stdout data.
+        eprintln!("\nNo motors found.");
+        eprintln!(
             "  Checklist: 18V power on? brown wire -> GND? try swapping A/B (orange<->white)."
         );
         if exhaustive {
-            println!("  (All 254 IDs 0x01..0xFE were polled.)");
+            eprintln!("  (All 254 IDs 0x01..0xFE were polled.)");
         } else {
-            println!("  Only IDs 0x01..0x0F were polled — `scan --full` tries all 254.");
+            eprintln!("  Only IDs 0x01..0x0F were polled — `scan --full` tries all 254.");
         }
         return Ok(ExitCode::FAILURE);
     }
@@ -82,9 +83,19 @@ fn poll_scan(bus: &Bus, range: RangeInclusive<u8>) -> m0601::Result<ScanReport> 
     let count = usize::from(end - start) + 1;
     let secs = (count as f64 * bus.timeout().as_secs_f64()).ceil();
     println!("Polling 0x{start:02X}..0x{end:02X} ({count} IDs, ~{secs:.0}s):");
-    let report = bus.scan(range, |mid| {
-        // `mid` is about to be probed, so count it as in-progress: the bar
-        // shows 1/count at the first ID and reaches full at the last.
+    let report = bus.scan(range.clone(), progress_bar(&range))?;
+    clear_progress();
+    Ok(report)
+}
+
+/// A `Bus::scan` progress callback drawing a 30-cell bar across `range`.
+/// Shared with `set-id`, whose exhaustive pre-write scan is otherwise a
+/// ~40 s silent stall. `mid` is the ID *about* to be probed, so the bar
+/// shows 1/count at the first ID and reaches full at the last.
+pub(crate) fn progress_bar(range: &RangeInclusive<u8>) -> impl FnMut(u8) {
+    let start = *range.start();
+    let count = usize::from(*range.end() - start) + 1;
+    move |mid| {
         let filled = 30 * (usize::from(mid - start) + 1) / count;
         print!(
             "\r  [{}{}] 0x{mid:02X}",
@@ -92,7 +103,11 @@ fn poll_scan(bus: &Bus, range: RangeInclusive<u8>) -> m0601::Result<ScanReport> 
             "-".repeat(30 - filled)
         );
         let _ = std::io::stdout().flush();
-    })?;
+    }
+}
+
+/// Erase the progress-bar line left by [`progress_bar`].
+pub(crate) fn clear_progress() {
     print!("\r{}\r", " ".repeat(50));
-    Ok(report)
+    let _ = std::io::stdout().flush();
 }

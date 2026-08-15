@@ -3,8 +3,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use m0601::{Feedback, M0601};
@@ -46,6 +45,15 @@ pub fn run(
     // conversion regardless of what a future caller passes.
     let interval = Duration::try_from_secs_f64(1.0 / hz).unwrap_or(Duration::from_millis(200));
 
+    // The effective poll rate must track --hz, not --timeout. A plain query()
+    // holds the bus for the full --timeout when the motor is slow or silent,
+    // so a high --hz would silently collapse to ~1/timeout (e.g. --hz 100 with
+    // the default 150 ms timeout ran at ~6 Hz while the banner claimed 100).
+    // Bound the reply wait instead: 6 ms covers the ~0.9 ms reply frame plus
+    // turnaround (see M0601::query_with), shortened only if the interval or a
+    // smaller --timeout is tighter. Genuine silence is caught by the debounce.
+    let reply_wait = Duration::from_millis(6).min(interval).min(timeout);
+
     let mut log = match &csv {
         Some(path) => {
             // `File::create` truncates. Say so before it happens rather than
@@ -68,10 +76,16 @@ pub fn run(
 
     // Ctrl-C / SIGTERM / SIGHUP just clear the flag; the loop then exits and
     // the CSV file is flushed and closed normally.
-    let running = Arc::new(AtomicBool::new(true));
-    {
-        let running = running.clone();
-        let _ = ctrlc::set_handler(move || running.store(false, Ordering::Relaxed));
+    let (running, handler) = crate::cmd::install_stop_flag();
+    if let Err(e) = handler {
+        // Without the handler, Ctrl-C/SIGTERM terminates the process
+        // immediately — the loop's clean "Stopped." / "Saved N rows" summary
+        // won't print. No data is lost: CSV rows are flushed per line as they
+        // are written (see the row-by-row flush below).
+        eprintln!(
+            "[!] could not install signal handler ({e}); Ctrl-C will terminate abruptly \
+             (CSV rows are already flushed per line, so none are lost)."
+        );
     }
 
     let mut count: u64 = 0;
@@ -80,12 +94,17 @@ pub fn run(
         let t0 = Instant::now();
         // A transient bus error (USB hiccup) must not kill a long-running
         // monitor — warn and keep polling, same policy as the control loop.
-        let reading = match motor.query() {
+        let reading = match motor.query_with(reply_wait) {
             Ok(reading) => reading,
             Err(e) => {
                 print!("\r[!] bus error: {e} — still polling          ");
                 let _ = std::io::stdout().flush();
-                std::thread::sleep(interval);
+                // Pace off the same elapsed clock as the success path, not a
+                // fresh full interval, so an error cycle doesn't over-sleep.
+                let elapsed = t0.elapsed();
+                if elapsed < interval {
+                    std::thread::sleep(interval - elapsed);
+                }
                 continue;
             }
         };

@@ -6,7 +6,9 @@
 use std::io::{self, Write};
 
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{Clear, ClearType};
+use crossterm::terminal::{
+    BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate,
+};
 use crossterm::{cursor::MoveTo, queue};
 use m0601::Mode;
 
@@ -26,7 +28,12 @@ pub(super) fn draw(out: &mut impl Write, shared: &Shared, port: &str, id: u8) ->
     };
     let msg = lock(&shared.msg).clone();
 
-    queue!(out, Clear(ClearType::All))?;
+    // Wrap the whole frame in a synchronized update so the clear-then-repaint
+    // reaches the terminal as one atomic buffer swap instead of a visible
+    // blank-then-fill flash (terminals that don't support it just ignore the
+    // markers). Paired with the buffer-diff in `ui`, which skips this entirely
+    // when nothing changed.
+    queue!(out, BeginSynchronizedUpdate, Clear(ClearType::All))?;
     queue!(
         out,
         MoveTo(2, 0),
@@ -178,6 +185,7 @@ pub(super) fn draw(out: &mut impl Write, shared: &Shared, port: &str, id: u8) ->
         Print(format!(">> {msg}")),
         ResetColor
     )?;
+    queue!(out, EndSynchronizedUpdate)?;
     out.flush()
 }
 

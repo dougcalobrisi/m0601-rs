@@ -44,6 +44,14 @@ use m0601::{M0601, Mode};
 
 use state::Shared;
 
+/// Default velocity ramp for interactive driving (`--accel`). The motor's
+/// fastest ramp is `1`, but a keystroke here commands a large instantaneous
+/// step (a jump to the full preset, or an F→B reversal), so the default is
+/// deliberately gentler — in the same spirit as the bus's `SAFE_STOP_ACCEL`
+/// (5) — to keep the current spike under the 3 A bus-overcurrent trip on a
+/// loaded wheel. `0` selects the motor's own default ramp.
+pub const DEFAULT_DRIVE_ACCEL: u8 = 3;
+
 /// Restores the terminal on drop (alt screen, raw mode, cursor). Created
 /// *after* raw mode is entered so an unwind always restores.
 struct TermGuard;
@@ -57,6 +65,18 @@ impl Drop for TermGuard {
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+}
+
+/// Restores the process panic hook on drop. `set_hook` is a global side
+/// effect; without this the terminal-restoring hook outlives `control::run`,
+/// which matters if it is ever driven from a longer-lived process. `take_hook`
+/// removes our hook and reinstates the default in its place.
+struct HookGuard;
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        let _ = std::panic::take_hook();
+    }
 }
 
 /// Stops the motor on drop: clears `running` and joins the poll thread,
@@ -76,7 +96,7 @@ impl Drop for StopGuard {
     }
 }
 
-pub fn run(port: &str, id: u8, rpm: i16) -> m0601::Result<ExitCode> {
+pub fn run(port: &str, id: u8, rpm: i16, accel: u8) -> m0601::Result<ExitCode> {
     // Short port timeout: the 50 Hz loop must never block long on the OS.
     let mut motor = M0601::open(port, id, Duration::from_millis(50))?;
     // Start in velocity mode. A failure here is not fatal — the motor may
@@ -110,10 +130,12 @@ pub fn run(port: &str, id: u8, rpm: i16) -> m0601::Result<ExitCode> {
         restore_terminal();
         default_hook(info);
     }));
+    // Restore the previous hook on every exit path (error return included).
+    let _hook = HookGuard;
 
     let poll_handle = {
         let shared = shared.clone();
-        std::thread::spawn(move || poll::run(motor, shared))
+        std::thread::spawn(move || poll::run(motor, shared, accel))
     };
 
     // Drop order (reverse of declaration): _term first, then _stop.
