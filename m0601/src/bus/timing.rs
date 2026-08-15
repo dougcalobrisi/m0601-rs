@@ -25,8 +25,10 @@ const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// which point it stops responding to drive commands and the controlled
 /// deceleration is defeated — the opposite of what a safe stop wants. A
 /// moderate ramp decelerates firmly without provoking that trip, and the
-/// brake rounds that follow still deliver the hard final hold. `5` matches
-/// the value `m0601-quad` recommends for launch (see its `limits.accel`).
+/// brake rounds that follow still deliver the hard final hold. `5` is a
+/// firm-but-safe middle of that range; override it with
+/// [`Bus::with_stop_accel`](crate::Bus::with_stop_accel) if a heavier or
+/// lighter chassis wants a different deceleration.
 const SAFE_STOP_ACCEL: u8 = 5;
 
 /// Default minimum idle gap enforced between frames on a bus — see
@@ -110,7 +112,8 @@ impl Default for BusTiming {
 /// spaced once inside the transaction and once in the trailing gap. A
 /// periodic multi-motor loop's cycle must exceed this, and stay at or under
 /// [`drive_floor`](crate::protocol::drive_floor), or it cannot sustain its
-/// own period. `m0601-quad` sizes its cycle against `bus_period(4, 1, …)`.
+/// own period. A four-wheel drive loop that also polls one wheel per cycle,
+/// for instance, sizes its period against `bus_period(4, 1, …)`.
 ///
 /// ```
 /// use std::time::Duration;
