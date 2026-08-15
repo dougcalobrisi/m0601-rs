@@ -93,6 +93,20 @@ impl Faults {
     /// "Troubleshoot" is wrong — see `PROTOCOL.md`.
     pub const OVERHEAT: u8 = 0x10;
 
+    /// Union of every fault bit this driver defines (`0x1F`): the five
+    /// protections above. The remaining bits of byte 8 are unassigned by the
+    /// protocol as the driver understands it.
+    ///
+    /// The single source of truth for "which bits are known" — used by
+    /// [`unknown_bits`](Self::unknown_bits) and [`Display`](fmt::Display).
+    /// A consumer that classifies faults should mask against this rather than
+    /// hardcode `0x1F`, so a future bit added here updates every caller.
+    pub const KNOWN_MASK: u8 = Self::SENSOR_ERR
+        | Self::OVERCURRENT
+        | Self::PHASE_OVERCURRENT
+        | Self::STALL
+        | Self::OVERHEAT;
+
     const NAMES: [(u8, &'static str); 5] = [
         (Self::SENSOR_ERR, "SensorErr"),
         (Self::OVERCURRENT, "Overcurrent"),
@@ -130,6 +144,16 @@ impl Faults {
     pub fn overheat(self) -> bool {
         self.0 & Self::OVERHEAT != 0
     }
+
+    /// Any set bits outside [`KNOWN_MASK`](Self::KNOWN_MASK) — a fault the
+    /// motor reported that this driver has no name for. `0` when every set bit
+    /// is a documented protection.
+    ///
+    /// Lets a consumer surface an unrecognised fault (e.g. from a newer
+    /// firmware) without keeping its own copy of the known-bit set.
+    pub fn unknown_bits(self) -> u8 {
+        self.0 & !Self::KNOWN_MASK
+    }
 }
 
 /// `"OK"`, or the known fault names joined with `" | "`. Any bits outside
@@ -160,8 +184,7 @@ impl fmt::Display for Faults {
             }
         }
         // Report leftover bits rather than hiding them behind a known name.
-        let known = Self::NAMES.iter().fold(0u8, |acc, (bit, _)| acc | bit);
-        let unknown = self.0 & !known;
+        let unknown = self.unknown_bits();
         if unknown != 0 {
             if any {
                 f.write_str(" | ")?;
@@ -176,8 +199,7 @@ impl fmt::Display for Faults {
 ///
 /// Produced by [`protocol::parse_feedback`](crate::protocol::parse_feedback)
 /// and [`M0601::query`](crate::M0601::query). Values are stored at full
-/// precision; round only when displaying (the CLI uses `{:+.3}` A and
-/// `{:.1}`°).
+/// precision; round only when displaying (e.g. `{:+.3}` A and `{:.1}`°).
 #[derive(Debug, Clone, Copy, PartialEq)]
 // Returned by the driver, never constructed by callers: `#[non_exhaustive]`
 // keeps room to surface a new wire field (the protocol has unused frame bytes)
@@ -311,10 +333,11 @@ impl Telemetry {
 /// backward one: a *true* motion of more than 180° between two samples
 /// aliases to the short way round and is integrated with the wrong sign and
 /// magnitude. Poll often enough that the wheel cannot turn half a revolution
-/// between samples. At the M0601's 330 RPM ceiling that is 1980°/s, so even a
-/// leisurely 14 Hz per-wheel poll (the rate a four-motor bus sustains at
-/// ~55 Hz shared) sees only ~140° per step; at a more typical 120 RPM it is
-/// ~52° — comfortably inside the bound. Faster wheels need faster polling.
+/// between samples: at the M0601's 330 RPM ceiling (1980°/s) that means a
+/// per-wheel poll no slower than ~11 Hz; a wheel that never exceeds a lower
+/// speed tolerates a proportionally slower poll. Given a poll interval,
+/// [`max_unaliased_rpm`](Self::max_unaliased_rpm) returns the exact speed
+/// ceiling the shortest-arc unwrap stays valid up to.
 ///
 /// The type is pure (no I/O) and cheap to copy, so a control loop can keep
 /// one per wheel.
@@ -407,6 +430,35 @@ impl PositionAccumulator {
     pub fn reset(&mut self) {
         self.last = None;
         self.cumulative = 0.0;
+    }
+
+    /// The fastest wheel speed (RPM) whose motion the shortest-arc unwrap can
+    /// still resolve when samples are `gap` apart — i.e. the speed at which the
+    /// wheel travels exactly 180° per `gap`. Above it, a sample steps more than
+    /// half a turn and [`update`](Self::update) aliases (see the validity
+    /// bound in the type docs).
+    ///
+    /// This is the derivation of that bound made executable: 180° per `gap` is
+    /// half a revolution, so the ceiling is `30 / gap_secs` RPM. A control loop
+    /// polling at a fixed cadence can compare this against its own speed limit
+    /// to know whether its odometry can alias, or re-baseline the accumulator
+    /// when a poll gap grows past the corresponding interval. Returns `+∞` for
+    /// a zero `gap`.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use m0601::PositionAccumulator;
+    /// // A 20 ms poll resolves up to 1500 RPM — far above the motor's ceiling.
+    /// let ceiling = PositionAccumulator::max_unaliased_rpm(Duration::from_millis(20));
+    /// assert!((ceiling - 1500.0).abs() < 1e-9);
+    /// ```
+    pub fn max_unaliased_rpm(gap: std::time::Duration) -> f64 {
+        let secs = gap.as_secs_f64();
+        if secs <= 0.0 {
+            f64::INFINITY
+        } else {
+            30.0 / secs
+        }
     }
 }
 
@@ -545,5 +597,47 @@ mod tests {
         let via_deg = acc2.update(crate::protocol::raw_to_deg(8_192));
         assert_eq!(via_raw, via_deg);
         assert!((via_raw - 90.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn known_mask_is_the_union_of_the_named_bits() {
+        use super::Faults;
+        let named = Faults::NAMES.iter().fold(0u8, |acc, (bit, _)| acc | bit);
+        assert_eq!(
+            Faults::KNOWN_MASK,
+            named,
+            "KNOWN_MASK must cover exactly the named bits"
+        );
+        assert_eq!(Faults::KNOWN_MASK, 0x1F);
+    }
+
+    #[test]
+    fn unknown_bits_reports_only_undefined_bits() {
+        use super::Faults;
+        assert_eq!(Faults(0x00).unknown_bits(), 0x00);
+        assert_eq!(
+            Faults(0x1F).unknown_bits(),
+            0x00,
+            "every named bit is known"
+        );
+        assert_eq!(Faults(0x20).unknown_bits(), 0x20);
+        assert_eq!(
+            Faults(0x21).unknown_bits(),
+            0x20,
+            "a known bit alongside an unknown one"
+        );
+    }
+
+    #[test]
+    fn max_unaliased_rpm_is_the_180_deg_per_gap_ceiling() {
+        use std::time::Duration;
+        // 180° per gap = half a rev; at 100 ms that is 5 rev/s = 300 RPM.
+        let ceiling = PositionAccumulator::max_unaliased_rpm(Duration::from_millis(100));
+        assert!((ceiling - 300.0).abs() < 1e-9);
+        // A zero gap can never alias, so the ceiling is unbounded.
+        assert_eq!(
+            PositionAccumulator::max_unaliased_rpm(Duration::ZERO),
+            f64::INFINITY
+        );
     }
 }

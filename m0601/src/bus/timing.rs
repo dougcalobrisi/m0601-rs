@@ -112,7 +112,7 @@ impl Default for BusTiming {
 /// spaced once inside the transaction and once in the trailing gap. A
 /// periodic multi-motor loop's cycle must exceed this, and stay at or under
 /// [`drive_floor`](crate::protocol::drive_floor), or it cannot sustain its
-/// own period. A four-wheel drive loop that also polls one wheel per cycle,
+/// own period. A loop driving four motors that also polls one per cycle,
 /// for instance, sizes its period against `bus_period(4, 1, …)`.
 ///
 /// ```

@@ -317,8 +317,8 @@ impl<T: Transport> M0601<T> {
     /// `Ok(None)` means the bus stayed silent, the reply was too short, the
     /// reply came from a different motor ID, or `frame` is one that elicits
     /// no telemetry at all (mode switch, set-ID — the frame is still sent) —
-    /// all expected outcomes, not errors. Used by the CLI's 50 Hz control
-    /// loop with a short `wait` (~6 ms). Mirrored handles flip the signs of
+    /// all expected outcomes, not errors. Suited to a realtime control loop
+    /// with a short `wait` (~6 ms). Mirrored handles flip the signs of
     /// the parsed speed/current (the raw frame is untouched).
     ///
     /// When [`strict CRC`](Self::with_strict_crc) is enabled on this handle, a
@@ -337,7 +337,7 @@ impl<T: Transport> M0601<T> {
     /// timeout for the reply. Equivalent to
     /// [`query_with(self.timeout())`](Self::query_with).
     ///
-    /// The full-timeout wait suits one-shot and CLI use, where the backstop
+    /// The full-timeout wait suits one-shot and interactive use, where the backstop
     /// timeout is an acceptable ceiling on a single call. It is **not** for a
     /// realtime loop on a shared bus: the wait is held under the bus lock, so
     /// a slow or silent motor stalls every other wheel for the whole timeout —
@@ -359,7 +359,7 @@ impl<T: Transport> M0601<T> {
     /// control loop can bound how long the shared bus lock is held. That wait
     /// is the whole cost of the transaction on a half-duplex bus (another
     /// motor's frame cannot be interleaved into it), so a loop polling several
-    /// motors at ~55 Hz should pass a short wait — roughly **3–6 ms**, enough
+    /// motors in turn should pass a short wait — roughly **3–6 ms**, enough
     /// to cover the ~0.9 ms reply frame plus the motor's turnaround — rather
     /// than the tens-to-hundreds of ms a backstop [`timeout`](Self::timeout)
     /// typically is. A reply that has not arrived within `wait` reads as a

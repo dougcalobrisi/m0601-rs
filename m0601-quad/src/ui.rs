@@ -306,12 +306,13 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, shared: &Shared) -> bool {
         }
         KeyCode::Char('w') | KeyCode::Char('W') => i.throttle = step(i.throttle, 0.10),
         KeyCode::Char('s') | KeyCode::Char('S') => i.throttle = step(i.throttle, -0.10),
-        KeyCode::Char('a') | KeyCode::Char('A') => i.turn = step(i.turn, -0.10),
-        KeyCode::Char('d') | KeyCode::Char('D') => i.turn = step(i.turn, 0.10),
+        // A/Left = turn left = +turn (CCW, REP-103); D/Right = −turn.
+        KeyCode::Char('a') | KeyCode::Char('A') => i.turn = step(i.turn, 0.10),
+        KeyCode::Char('d') | KeyCode::Char('D') => i.turn = step(i.turn, -0.10),
         KeyCode::Up => i.throttle = step(i.throttle, 0.02),
         KeyCode::Down => i.throttle = step(i.throttle, -0.02),
-        KeyCode::Left => i.turn = step(i.turn, -0.02),
-        KeyCode::Right => i.turn = step(i.turn, 0.02),
+        KeyCode::Left => i.turn = step(i.turn, 0.02),
+        KeyCode::Right => i.turn = step(i.turn, -0.02),
         KeyCode::Char('x') | KeyCode::Char('X') => i.turn = 0.0,
         KeyCode::Char(' ') => i.all_stop = true,
         KeyCode::Char('k') | KeyCode::Char('K') => i.brake = !i.brake,

@@ -171,9 +171,17 @@ fn main() -> m0601::Result<()> {
 }
 ```
 
-## m0601-quad: the four-wheel reference app
+## Four-wheel example → full app
 
-`m0601-quad` drives four wheels as one skid-steer rover and doubles as
+Start with the one-screen example — open a bus, mint four mirrored handles,
+arm a stop guard, run a drive→poll→stop cycle, no TUI or scheduler in the way:
+
+```console
+cargo run --example four_wheel_minimal -- /dev/ttyUSB0
+```
+
+`m0601-quad` is that same wiring grown into a real application. It drives four
+wheels as one skid-steer rover and doubles as
 the reference implementation for multi-motor use of the library: a
 TOML wheel map (`wheels.toml`) validated fail-closed, a single pilot
 thread owning the bus at 55.6 Hz, latched fault handling with manual

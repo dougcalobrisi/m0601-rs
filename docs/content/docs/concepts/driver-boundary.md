@@ -54,6 +54,15 @@ writing your own:
   wheel, and unwraps single-turn angle into a continuous one. If you find yourself
   hand-building a query frame, re-deriving frame time from the baud rate, or unwrapping
   angle yourself, check the API first — it's probably already there.
+- **The odometry aliasing bound.** `PositionAccumulator`'s shortest-arc unwrap is only
+  valid while a wheel turns under 180° between samples.
+  `PositionAccumulator::max_unaliased_rpm(gap)` turns your poll interval into the exact
+  speed ceiling, so you compare against it (or re-baseline on a long gap) instead of
+  re-deriving the `30 / gap` relationship yourself.
+- **The set of defined fault bits.** `Faults::KNOWN_MASK` and `Faults::unknown_bits()`
+  are the single source of truth for which fault bits this driver understands. Classify
+  against them rather than hardcoding a mask like `0x1F`, so a fault bit added to a
+  future firmware (and this driver) updates your code for free.
 
 ## What the driver leaves to you — on purpose
 

@@ -7,9 +7,9 @@
 
 use std::time::Duration;
 
-use m0601::protocol::{self, ReplyKind, frame_feedback};
+use m0601::protocol::{ReplyKind, frame_query_reply, parse_feedback};
 use m0601::transport::Transport;
-use m0601::{Feedback, M0601};
+use m0601::{Faults, Feedback, M0601, Mode};
 
 /// What the pilot does to a wheel each cycle. Setpoints are in the
 /// *rover's* frame — the sign convention is applied underneath (by
@@ -34,8 +34,9 @@ impl<T: Transport> WheelIo for M0601<T> {
     }
 
     fn poll(&mut self, wait: Duration) -> m0601::Result<Option<Feedback>> {
-        let frame = frame_feedback(M0601::id(self));
-        self.transact(&frame, wait)
+        // `query_with` sends the `0x74` feedback frame and decodes the reply —
+        // exactly the `frame_feedback(id)` + `transact` this used to spell out.
+        self.query_with(wait)
     }
 }
 
@@ -86,22 +87,22 @@ impl WheelIo for SimWheel {
     }
 
     fn poll(&mut self, _wait: Duration) -> m0601::Result<Option<Feedback>> {
-        // Build the reply the way the motor would — query layout: id,
-        // mode, current i16, speed i16, temp, pos8, faults, crc — and
-        // then DECODE it with the library's parser. If this app's idea of
-        // the layout ever drifts, the parser is the arbiter.
+        // Build the reply the way the motor would — the library's
+        // `frame_query_reply` encodes the query layout (and its CRC) — then
+        // DECODE it with the library's parser. If this app's idea of the
+        // layout ever drifts, the driver is the arbiter at both ends.
         let speed = self.speed.round().clamp(-330.0, 330.0) as i16;
-        let current = ((f32::from(speed) * 0.004 + 0.15) * 32767.0 / 8.0) as i16;
-        let mut frame = [0u8; 10];
-        frame[0] = self.id;
-        frame[1] = 0x02; // velocity mode
-        frame[2..4].copy_from_slice(&current.to_be_bytes());
-        frame[4..6].copy_from_slice(&speed.to_be_bytes());
-        frame[6] = 34; // temperature °C
-        frame[7] = 0; // coarse position
-        frame[8] = 0; // no faults
-        frame[9] = protocol::crc8_maxim(&frame[..9]);
-        let mut fb = protocol::parse_feedback(&frame, ReplyKind::Query);
+        let current_a = f32::from(speed) * 0.004 + 0.15;
+        let frame = frame_query_reply(
+            self.id,
+            Mode::Velocity,
+            current_a,
+            speed,
+            34,  // temperature °C
+            0.0, // coarse position
+            Faults(0),
+        );
+        let mut fb = parse_feedback(&frame, ReplyKind::Query);
         if self.reversed {
             // The same inbound adjustment M0601::mirrored applies.
             if let Some(fb) = fb.as_mut() {

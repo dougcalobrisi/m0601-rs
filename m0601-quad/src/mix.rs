@@ -5,10 +5,10 @@ use crate::config::Side;
 
 /// Operator intent, both axes in `-1.0..=1.0`.
 ///
-/// Sign convention: **positive turn = right** (clockwise from above),
-/// matching the steering-wheel feel of the D key. Note this is the
-/// opposite of ROS's REP-103 angular-z (CCW-positive); the flip lives
-/// here, in one place, on purpose.
+/// Sign convention: **positive turn = left** (counter-clockwise from
+/// above), matching ROS's REP-103 angular-z (CCW-positive) — and the
+/// downstream consumer's physical `omega_radps`. The keypad keeps its intuitive
+/// feel by mapping A/Left → +turn and D/Right → −turn (see `ui::handle_key`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DriveCmd {
     throttle: f32,
@@ -34,9 +34,9 @@ impl DriveCmd {
 
     /// Both sides' normalized outputs, saturation already resolved.
     fn sides(&self) -> (f32, f32) {
-        // Positive turn = right = left side speeds up.
-        let l = self.throttle + self.turn;
-        let r = self.throttle - self.turn;
+        // Positive turn = left (CCW) = right side speeds up.
+        let l = self.throttle - self.turn;
+        let r = self.throttle + self.turn;
         // Scale-to-fit, NOT clamping. At throttle 1.0, turn 0.5 a naive
         // clamp yields (1.0, 0.5) — ratio 2:1 where 3:1 was commanded, so
         // the turn goes shallow exactly at speed. Scaling both by the
@@ -85,24 +85,25 @@ mod tests {
     }
 
     #[test]
-    fn positive_turn_is_right_left_side_speeds_up() {
+    fn positive_turn_is_left_right_side_speeds_up() {
         let (l, r) = rpms(0.5, 0.2, 120);
-        assert!(l > r, "turning right: left {l} must outrun right {r}");
+        assert!(r > l, "turning left (CCW): right {r} must outrun left {l}");
     }
 
     #[test]
     fn spin_in_place_counter_rotates_the_sides() {
-        assert_eq!(rpms(0.0, 1.0, 120), (120, -120));
-        assert_eq!(rpms(0.0, -1.0, 120), (-120, 120));
+        // Positive turn spins CCW: left side backs up, right side drives.
+        assert_eq!(rpms(0.0, 1.0, 120), (-120, 120));
+        assert_eq!(rpms(0.0, -1.0, 120), (120, -120));
     }
 
     #[test]
     fn partial_turn_at_full_throttle_preserves_the_ratio() {
         // The test that FAILS under naive clamping: t=1.0, s=0.5 is
-        // l=1.5, r=0.5 — a 3:1 ratio. Clamping to (1.0, 0.5) flattens it
-        // to 2:1 and the rover understeers exactly at full speed.
+        // r=1.5, l=0.5 — a 3:1 ratio. Clamping to (0.5, 1.0) flattens it
+        // to 1:2 and the rover understeers exactly at full speed.
         let (l, r) = rpms(1.0, 0.5, 120);
-        assert_eq!((l, r), (120, 40), "3:1 preserved by scaling, not 2:1");
+        assert_eq!((l, r), (40, 120), "3:1 preserved by scaling, not 2:1");
     }
 
     #[test]

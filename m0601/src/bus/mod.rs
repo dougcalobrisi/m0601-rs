@@ -286,7 +286,7 @@ impl<T: Transport> Bus<T> {
     }
 
     /// Send an arbitrary frame and return the raw reply bytes (may be
-    /// empty). Powers the CLI's `raw` subcommand.
+    /// empty). The escape hatch for frames the typed API doesn't build.
     pub fn send_raw(&self, frame: &[u8], wait: Duration) -> Result<Vec<u8>> {
         with_gap(&self.port, |t| t.send_recv(frame, wait))
     }
@@ -312,7 +312,7 @@ impl<T: Transport> Bus<T> {
     /// [`set_id`](Self::set_id) requires it to).
     ///
     /// When the collision garbles the buffer beyond parsing, stage 1 cannot
-    /// name any ID at all — a four-motor bus can scan as *empty*. That case
+    /// name any ID at all — a bus full of motors can scan as *empty*. That case
     /// is reported via [`ScanReport::garbled`] so callers can escalate to a
     /// wider poll instead of concluding the bus is dead.
     ///
@@ -427,8 +427,9 @@ impl<T: Transport> Bus<T> {
     /// round-major: each step's frame goes to every motor before the shared
     /// 20 ms gap, so N motors stop in the same ~300 ms as one. Stopping
     /// motors one at a time instead takes N × 300 ms, during which the
-    /// not-yet-stopped wheels coast — on a skid-steer chassis, one braked
-    /// wheel against three coasting ones is an uncommanded yaw. Rounds are
+    /// not-yet-stopped motors keep coasting — and when the motors share a
+    /// chassis, some braking while others still coast is an uncommanded,
+    /// asymmetric force. Interleaving keeps them decelerating in step. Rounds are
     /// paced on absolute deadlines, so the period does not stretch with
     /// motor count — as long as the round's frames fit inside it. With enough
     /// motors that `ids.len()` frames (each
