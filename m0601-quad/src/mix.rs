@@ -6,7 +6,7 @@ use crate::config::Side;
 /// Operator intent, both axes in `-1.0..=1.0`.
 ///
 /// Sign convention: **positive turn = left** (counter-clockwise from
-/// above), matching ROS's REP-103 angular-z (CCW-positive) — and the
+/// above), matching ROS's REP-103 angular-z (CCW-positive) — and a
 /// downstream consumer's physical `omega_radps`. The keypad keeps its intuitive
 /// feel by mapping A/Left → +turn and D/Right → −turn (see `ui::handle_key`).
 #[derive(Debug, Clone, Copy, PartialEq)]

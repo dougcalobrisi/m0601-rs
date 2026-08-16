@@ -78,7 +78,7 @@ nothing ever writes it for you.
 
 ```toml
 [bus]
-port          = "/dev/ttyUSB1"
+port          = "/dev/ttyUSB0"
 cycle_ms      = 18.0   # full 4-wheel cycle (55.6 Hz), under the 20 ms floor
 min_gap_ms    = 2.0    # → Bus::with_min_gap; idle AFTER each frame
 reply_wait_ms = 2.0    # per-poll reply window; measure it, don't guess

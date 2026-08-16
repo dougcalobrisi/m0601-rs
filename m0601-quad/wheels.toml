@@ -4,9 +4,13 @@
 # `m0601-quad check` validates it and prints the resolved table;
 # `m0601-quad calibrate` walks each wheel and prints corrected `invert`
 # lines to paste back here (it never writes this file itself).
+#
+# The timing numbers below were measured on one four-wheel reference rig.
+# They are a starting point, not a specification: re-measure yours with
+# `m0601-quad check --probe` before trusting the margins.
 
 [bus]
-port = "/dev/ttyUSB1"
+port = "/dev/ttyUSB0"
 cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
                     # drive interval drops below the 50 Hz floor and it
                     # coasts a little every cycle. 18 leaves 2 ms of margin.
