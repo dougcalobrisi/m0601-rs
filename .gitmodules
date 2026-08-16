@@ -1,3 +1,8 @@
+# Pinned to the theme's v0.14.0 tag (commit 6d5d778). Git records submodule
+# state as a commit, never a tag, so the tag name lives here; to move the pin,
+# check out the new tag inside docs/themes/hugo-book, commit the pointer, and
+# update this comment. Upstream `main` has since dropped SASS in a breaking
+# restyle, which is why this is a tag and not a moving branch.
 [submodule "docs/themes/hugo-book"]
 	path = docs/themes/hugo-book
 	url = https://github.com/alex-shpak/hugo-book

@@ -1,6 +1,9 @@
 /target
 *.csv
 
+# Local agent/tooling state — never part of the crate
+/.claude/
+
 # Hugo docs site build output
 /docs/public/
 /docs/resources/

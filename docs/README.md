@@ -17,11 +17,18 @@ and behavior changes still need a deliberate pass over `content/docs/cli/`.
 ## Prerequisites
 
 - **Hugo extended** ≥ 0.158 (`hugo version` should print `+extended`).
-- The theme is a git submodule. After cloning:
+- The theme is a git submodule, pinned to hugo-book **v0.14.0**. After cloning:
 
   ```sh
   git submodule update --init --recursive
   ```
+
+  Without this, Hugo still exits 0 but renders a layout-less site — every page
+  a bare 404. The pin is a tag rather than upstream `main`, which has since
+  dropped SASS in a breaking restyle. Git stores the submodule as a commit, so
+  the tag name is recorded in a comment in `.gitmodules`; to bump it, check out
+  the new tag in `docs/themes/hugo-book`, commit the pointer, and edit that
+  comment.
 
 ## Preview locally
 
@@ -37,8 +44,21 @@ cd docs
 hugo --minify      # static site into docs/public/ (gitignored)
 ```
 
-## Deployment
+## CI and deployment
 
-GitHub Pages deployment is **not wired up yet** — no workflow, and Pages is not
-enabled on the repo. When it is, the plan is to publish this site plus the rustdoc
-API reference (`cargo doc --no-deps -p m0601`) under `/api/`.
+The site lives in its own workflow, `.github/workflows/docs-site.yml`, separate
+from the Rust CI suite — the Rust jobs run on every push and PR, whereas
+rebuilding the published site is a deliberate act. It is **`workflow_dispatch`
+only**, with a `deploy` checkbox (default on):
+
+- **unchecked** — build only. Checks out with `submodules: recursive`, installs
+  pinned Hugo extended (checksum-verified), and runs
+  `hugo --minify --panicOnWarning`, so a missing layout or a broken `ref` fails
+  the build instead of shipping quietly.
+- **checked** — the same build with `--baseURL` from `actions/configure-pages`,
+  then deploys `docs/public/` to GitHub Pages via `actions/deploy-pages`.
+
+Pages is **not enabled on the repo yet**, so the deploy path will fail until
+Settings → Pages has *Source: GitHub Actions* selected; the build-only path
+works today. The rustdoc API reference (`cargo doc --no-deps -p m0601`) is still
+planned for `/api/` and is not published by this workflow.
