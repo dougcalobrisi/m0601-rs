@@ -266,9 +266,11 @@ expected bytes are written out as literals, derived from the DFRobot frame
 layout and the CRC-8/MAXIM specification — the CRC implementation is
 anchored to that algorithm's published check value (`crc8("123456789") ==
 0xA1`), so no assertion recomputes its own expectation with the code under
-test. A further set of known-answer frames is taken verbatim from two
-independent implementations that have driven real hardware (see
-[the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md)). Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
+test. A further set of known-answer frames is cross-checked against two
+independent implementations that have driven real hardware — every byte of
+those frames is mechanically determined by the frame layout and the CRC, so
+they are reproducible facts about the wire rather than copied source (see
+[the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md) and [NOTICE](https://github.com/dougcalobrisi/m0601-rs/blob/main/NOTICE)). Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
 repeats, safe-stop sequencing) runs against an in-memory mock transport.
 The `spin_and_stop` hardware test additionally requires
 `M0601_ALLOW_MOTION=1` — it briefly spins the wheel.

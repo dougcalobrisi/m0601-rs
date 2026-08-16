@@ -84,10 +84,16 @@ fn accel_byte_is_carried_verbatim() {
     );
 }
 
-/// Known-answer frames from two independent implementations: the
-/// `Il1yasviel/navigation_robot` C driver's unit tests and the MotorLink
-/// README's captured command reference (all with accel = 0). Agreement here
-/// is agreement with code that has driven real hardware.
+/// Known-answer frames cross-checked against two independent
+/// implementations: the `Il1yasviel/navigation_robot` C driver's unit tests
+/// and the MotorLink README's captured command reference (all with
+/// accel = 0). Agreement here is agreement with code that has driven real
+/// hardware.
+///
+/// Every byte below is mechanically determined by the frame layout and
+/// CRC-8/MAXIM — ID, command, big-endian RPM, padding, checksum — so these
+/// are independently reproducible facts about the wire, not copied source.
+/// Neither upstream states a license; see `NOTICE`.
 #[test]
 fn community_known_answer_velocity_frames() {
     for (rpm, expected) in [

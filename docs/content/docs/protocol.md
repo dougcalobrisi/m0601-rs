@@ -263,8 +263,8 @@ revisions may differ. The driver follows that default, with a
 suspect frame.
 
 **2. Acceleration byte position.** Wiki + DDT vendor sample + navigation_robot:
-**byte 6**. MotorLink's Python examples put it at byte 4 — a bug that never surfaced
-because all its captured vectors use accel 0. Byte 6 is correct.
+**byte 6**. MotorLink's Python examples put it at byte 4 — a discrepancy that never
+surfaces there, because all its captured vectors use accel 0. Byte 6 is correct.
 
 **3. Set-ID checksum.** MotorLink's README table shows a CRC (`…00 CB`, which *is*
 the CRC-8/MAXIM of that frame) in byte 9, but the wiki, the vendor sample, and
