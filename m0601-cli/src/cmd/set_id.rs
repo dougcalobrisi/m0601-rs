@@ -33,7 +33,9 @@ pub fn run(port: &str, timeout: Duration, new_id: u8, yes: bool) -> m0601::Resul
     // than freezing silently (an unfed progress line invites a mid-scan kill).
     let range = 0x01..=0xFE;
     println!("  Checking the bus is not shared (polling all 254 IDs):");
-    let ids = bus.scan(range.clone(), super::scan::progress_bar(&range))?.ids;
+    let ids = bus
+        .scan(range.clone(), super::scan::progress_bar(&range))?
+        .ids;
     super::scan::clear_progress();
     let current = match ids.as_slice() {
         [] => {

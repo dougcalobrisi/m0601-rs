@@ -133,9 +133,15 @@ mod tests {
     fn motion_commands_are_recognised_by_byte_1() {
         use super::is_motion_command;
         // 0x64 drive, 0xA0 mode switch → gated behind --yes.
-        assert!(is_motion_command(&parse_hex_frame("01 64 00 64 00 00 01 00 00").unwrap()));
-        assert!(is_motion_command(&parse_hex_frame("01 A0 00 00 00 00 00 00 01").unwrap()));
+        assert!(is_motion_command(
+            &parse_hex_frame("01 64 00 64 00 00 01 00 00").unwrap()
+        ));
+        assert!(is_motion_command(
+            &parse_hex_frame("01 A0 00 00 00 00 00 00 01").unwrap()
+        ));
         // 0x74 feedback query → read-only, no gate.
-        assert!(!is_motion_command(&parse_hex_frame("01 74 00 00 00 00 00 00 00").unwrap()));
+        assert!(!is_motion_command(
+            &parse_hex_frame("01 74 00 00 00 00 00 00 00").unwrap()
+        ));
     }
 }

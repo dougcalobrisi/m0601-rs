@@ -59,6 +59,11 @@ writing your own:
   `PositionAccumulator::max_unaliased_rpm(gap)` turns your poll interval into the exact
   speed ceiling, so you compare against it (or re-baseline on a long gap) instead of
   re-deriving the `30 / gap` relationship yourself.
+- **Setpoint slew limiting.** `SlewLimiter` bounds how fast a setpoint may change, so a
+  keystroke or a joystick snap becomes a ramp instead of a step that spikes current into
+  the 3 A trip. It carries the two details that are easy to get wrong: stop paths must
+  *bypass* the limit (`reset_to(0.0)`), and a held brake must not let it wind up toward
+  a latched throttle, or release becomes the very lurch it was meant to prevent.
 - **The set of defined fault bits.** `Faults::KNOWN_MASK` and `Faults::unknown_bits()`
   are the single source of truth for which fault bits this driver understands. Classify
   against them rather than hardcoding a mask like `0x1F`, so a fault bit added to a
@@ -73,8 +78,10 @@ would be wrong for some robot:
   velocity/yaw twist) into per-wheel setpoints is a *vehicle-class* decision —
   skid-steer, Ackermann, mecanum, and holonomic all mix differently. The driver speaks
   in per-wheel RPM/current/position and lets your vehicle layer own the mix.
-- **Closed-loop control.** Velocity/position PID, ramping, and setpoint smoothing are
-  yours. The driver sends exactly the setpoint you give it.
+- **Outer-loop control.** Not closed-loop control in general — read the split below
+  before you write a PID. What is yours is the loop over a *robot* quantity: heading
+  hold, odometry-driven distance, path following, station keeping. The driver sends
+  exactly the setpoint you give it, and knows nothing about where your machine is.
 - **The drive loop and its threading model.** The driver sends *one* frame per call;
   sustaining motion at ≥50 Hz — and how you thread and pace that loop — is the
   application's, so the driver drags in no runtime or scheduler. See [Polling and the
@@ -88,6 +95,39 @@ would be wrong for some robot:
 - **The position-mirror convention.** Mirroring flips speed/current signs, but whether
   a mirror-image wheel's reported *angle* should be reflected (and how) depends on your
   mechanical build, so it's opt-in rather than assumed.
+
+## Where control actually splits
+
+"Closed-loop control is yours" is too blunt to be useful, and taken literally it leads
+people into a real mistake. Control over an M0601 sits at three levels, and only the
+outermost is yours:
+
+1. **The inner loop — the motor's, already closed.** Velocity, current and position are
+   the motor's own firmware loops (that is what [`Mode`](https://docs.rs/m0601/latest/m0601/enum.Mode.html)
+   selects). When you send `100` in velocity mode you are handing a setpoint *to a
+   running PID*, not driving a duty cycle. **Do not wrap a second host-side loop around
+   the same variable** — a velocity PID on top of the motor's velocity PID, closed over
+   a 50 Hz half-duplex link with no timestamps, fights the loop underneath it and tunes
+   into oscillation. If a wheel is not holding its commanded RPM, that is a load,
+   supply, or fault question, not a missing gain.
+2. **Setpoint shaping — shared.** How fast the setpoint may *move* is a property of this
+   motor, because the binding constraint is its 3 A bus-overcurrent trip, so the driver
+   owns it:
+   - the drive frame's `accel` byte, per call via `drive_velocity_accel` or as a default
+     via `Bus::with_default_accel` — the motor's own ramp toward the setpoint;
+   - `BusTiming::stop_accel` — the same ramp on the way down, defaulted to a moderate
+     value so a hard stop can't trip the protection mid-stop;
+   - [`SlewLimiter`](https://docs.rs/m0601/latest/m0601/struct.SlewLimiter.html) — a
+     bound on how fast *you* move the setpoint, for the step changes a keystroke, a
+     joystick snap, or a mixer output produces. It holds no clock; you pass the elapsed
+     time.
+3. **The outer loop — yours.** Anything closed over a robot-level quantity: heading,
+   pose, distance travelled, a path, a mission. That needs odometry, a frame convention
+   and a clock, all of which are the application's. The driver gives you the raw
+   ingredients (`PositionAccumulator`, `Feedback`) and stops there.
+
+The short version: **don't re-close the motor's loops, do use the driver's shaping, and
+own everything above the wheel.**
 
 ## The seams
 

@@ -134,7 +134,9 @@ pub fn run(port: &str, id: u8, timeout: Duration, plan: Plan) -> m0601::Result<E
                     eprintln!(
                         "[x] Refused: no telemetry — cannot confirm the wheel is under {POSITION_ENTRY_RPM} RPM."
                     );
-                    eprintln!("    Check 18 V power, wiring (brown → GND), A/B polarity, and --id.");
+                    eprintln!(
+                        "    Check 18 V power, wiring (brown → GND), A/B polarity, and --id."
+                    );
                 }
                 Some(rpm) => eprintln!(
                     "[x] Refused: {rpm} RPM — must be under {POSITION_ENTRY_RPM} RPM to enter POSITION mode."

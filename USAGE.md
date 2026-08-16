@@ -317,6 +317,42 @@ protection; use `drive_velocity_accel(rpm, accel)` with a larger value
 change the default `drive_velocity` uses with `Bus::with_default_accel(n)`
 (whole bus) or `motor.with_default_accel(n)` (one handle).
 
+### Ramping the setpoint itself — `SlewLimiter`
+
+`accel` ramps the motor toward whatever setpoint it was last given; it does
+not bound how fast *you* move that setpoint. A keystroke, a joystick snap, or
+a mixer output that jumps between cycles is still a step change on the wire.
+`SlewLimiter` bounds the setpoint's rate of change. It holds no clock — you
+pass the elapsed time, so it stays testable and the scheduler stays yours:
+
+```rust
+use std::time::Duration;
+use m0601::SlewLimiter;
+
+let cycle = Duration::from_millis(20);
+let mut ramp = SlewLimiter::new(300.0)?; // 300 RPM/s => 6 RPM per cycle
+let target = 250.0;
+
+// ... once per cycle, in the drive loop:
+let rpm = ramp.step(target, cycle).round() as i16;
+// motor.drive_velocity(rpm)?;
+```
+
+Two rules make the difference between a limiter that helps and one that
+hurts:
+
+- **Stop paths must bypass it.** On an all-stop, a latched fault, or a dead
+  operator link, call `ramp.reset_to(0.0)` and send zero *now*. A fail-safe
+  that ramps is not a fail-safe.
+- **A held brake must not let it wind up.** While braking, keep it pinned at
+  `reset_to(0.0)` rather than stepping toward a still-latched throttle —
+  otherwise releasing the brake commands the fully ramped setpoint in a
+  single step, which is exactly the lurch the limiter exists to prevent.
+
+Use it for RPM or amps, not for position: a position setpoint is an absolute
+angle the motor interpolates to itself, so slewing it commands a different
+move rather than a gentler one.
+
 ### Telemetry while driving — the two reply layouts
 
 Every drive frame's reply carries telemetry too. Use `transact` to drive

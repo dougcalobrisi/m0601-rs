@@ -20,6 +20,8 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
+use m0601::SlewLimiter;
+
 use crate::clock::Clock;
 use crate::config::{Config, Side};
 use crate::io::WheelIo;
@@ -68,7 +70,10 @@ pub struct Pilot<W: WheelIo, C: Clock, S: FnMut()> {
     // ramp or the round-robin phase (and tests can run the loop in
     // bounded slices).
     state: [WheelState; 4],
-    ramped: [f32; 4],
+    /// Per-wheel host-side setpoint ramps. Stop and brake paths reset these
+    /// to zero rather than stepping them — see the setpoint block in
+    /// `one_cycle` and [`SlewLimiter::reset_to`].
+    ramps: [SlewLimiter; 4],
     cycle_idx: u64,
     consecutive_overruns: u64,
     ui_starved: bool,
@@ -87,6 +92,12 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
         log: Option<SyncSender<LogRow>>,
         ui_watchdog: Option<Duration>,
     ) -> Self {
+        // `Config::validate` guarantees a finite, positive rate, so the
+        // fallback is only reachable for a Config that bypassed it — the same
+        // reasoning as the timing accessors in `config.rs`. `GENTLE` errs
+        // toward a rover that barely moves, never toward an unramped step.
+        let ramp =
+            SlewLimiter::new(cfg.limits.ramp_rpm_per_s as f32).unwrap_or(SlewLimiter::GENTLE);
         Self {
             wheels,
             sides,
@@ -98,7 +109,7 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
             log,
             ui_watchdog,
             state: [WheelState::default(); 4],
-            ramped: [0.0; 4],
+            ramps: [ramp; 4],
             cycle_idx: 0,
             consecutive_overruns: 0,
             ui_starved: false,
@@ -144,7 +155,10 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
     fn one_cycle(&mut self) {
         let max_rpm = self.cfg.limits.max_rpm;
         let accel = self.cfg.limits.accel;
-        let ramp_step = (self.cfg.limits.ramp_rpm_per_s as f32) * self.cfg.cycle().as_secs_f32();
+        // The ramp advances by the *nominal* cycle, not measured elapsed time:
+        // a scheduling overrun must not license a bigger setpoint step, and
+        // repeated overruns are already handled as a fault (MAX_OVERRUNS).
+        let cycle = self.cfg.cycle();
 
         // -- round-robin poll, every POLL_EVERY-th cycle (module doc) -----
         // The polled wheel was also *driven* last cycle, and motors answer
@@ -240,16 +254,16 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
             DriveCmd::new(intent.throttle, intent.turn)
         };
         for i in 0..4 {
-            if halted || braking {
+            let shaped = if halted || braking {
                 // Stop paths BYPASS the ramp. Every stack's failsafe
                 // writes zero immediately; ours does too.
-                self.ramped[i] = 0.0;
+                self.ramps[i].reset_to(0.0);
+                self.ramps[i].current_setpoint()
             } else {
                 let target = f32::from(wheel_rpm(cmd, self.sides[i], max_rpm));
-                let delta = (target - self.ramped[i]).clamp(-ramp_step, ramp_step);
-                self.ramped[i] += delta;
-            }
-            self.state[i].cmd_rpm = self.ramped[i].round() as i16;
+                self.ramps[i].step(target, cycle)
+            };
+            self.state[i].cmd_rpm = shaped.round() as i16;
         }
         if intent.all_stop {
             let mut i = lock(&self.shared.intent);
@@ -333,7 +347,10 @@ impl<W: WheelIo, C: Clock, S: FnMut()> Pilot<W, C, S> {
             i.turn = 0.0;
             i.brake = false;
         }
-        self.ramped = [0.0; 4];
+        // A latched trip is a stop path: bypass the ramp, don't decay through it.
+        for r in self.ramps.iter_mut() {
+            r.reset_to(0.0);
+        }
         for w in self.state.iter_mut() {
             w.cmd_rpm = 0;
         }

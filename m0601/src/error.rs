@@ -39,6 +39,14 @@ pub enum Error {
     /// 10 bytes.
     #[error("invalid frame length {0} (need 9 or 10 bytes)")]
     InvalidFrameLen(usize),
+
+    /// A [`SlewLimiter`](crate::SlewLimiter) rate that was not finite and
+    /// strictly positive.
+    ///
+    /// Refused at construction rather than sanitized: a zero or negative rate
+    /// freezes the setpoint, and a `NaN` rate silently disables limiting.
+    #[error("invalid slew rate {0} (must be finite and > 0)")]
+    InvalidSlewRate(f32),
 }
 
 impl Error {

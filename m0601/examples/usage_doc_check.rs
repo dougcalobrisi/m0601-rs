@@ -87,6 +87,22 @@ fn timing_example() -> m0601::Result<()> {
     Ok(())
 }
 
+fn slew_example() -> m0601::Result<()> {
+    // Host-side setpoint ramp: bounds how fast *we* move the setpoint, which
+    // the motor's `accel` byte does not. No clock — the caller passes elapsed.
+    let cycle = Duration::from_millis(20);
+    let mut ramp = m0601::SlewLimiter::new(300.0)?; // 300 RPM/s => 6 RPM/cycle
+    let target = 250.0;
+
+    let rpm = ramp.step(target, cycle).round() as i16;
+    assert_eq!(rpm, 6);
+
+    // Stop paths bypass the ramp; a held brake pins it so release starts at 0.
+    ramp.reset_to(0.0);
+    assert_eq!(ramp.current_setpoint(), 0.0);
+    Ok(())
+}
+
 fn low_latency_example() -> m0601::Result<()> {
     let transport = m0601::SerialTransport::open("/dev/ttyUSB0", Duration::from_millis(150))?;
     if !transport.low_latency() {

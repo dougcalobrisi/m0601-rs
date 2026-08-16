@@ -178,6 +178,7 @@ pub mod error;
 #[cfg(target_os = "linux")]
 mod low_latency;
 pub mod protocol;
+pub mod slew;
 pub mod transport;
 pub mod types;
 
@@ -187,5 +188,6 @@ pub use bus::{
 };
 pub use error::{Error, Result};
 pub use protocol::{ReplyKind, drive_floor, frame_time};
+pub use slew::SlewLimiter;
 pub use transport::{MockTransport, SerialTransport, Transport};
 pub use types::{Faults, Feedback, Mode, PositionAccumulator, Telemetry};
