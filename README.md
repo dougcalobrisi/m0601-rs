@@ -1,8 +1,16 @@
 # m0601 — a Rust library + CLI for the DFRobot M0601 hub motor
 
-A reusable driver crate ([`m0601/`](m0601)) and a CLI
-([`m0601-cli/`](m0601-cli), binary `m0601`) for the DFRobot **M0601**
-direct-drive hub motor over half-duplex RS485.
+[![CI](https://github.com/dougcalobrisi/m0601-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/dougcalobrisi/m0601-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/m0601.svg)](https://crates.io/crates/m0601)
+[![docs.rs](https://img.shields.io/docsrs/m0601)](https://docs.rs/m0601)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://github.com/dougcalobrisi/m0601-rs#build--install)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/dougcalobrisi/m0601-rs/blob/main/LICENSE)
+
+A reusable driver crate
+([`m0601/`](https://github.com/dougcalobrisi/m0601-rs/tree/main/m0601)) and a CLI
+([`m0601-cli/`](https://github.com/dougcalobrisi/m0601-rs/tree/main/m0601-cli),
+binary `m0601`) for the DFRobot **M0601** direct-drive hub motor over half-duplex
+RS485.
 
 **M0601** is the motor model — a rebadged Direct Drive Tech **M0601C-111**;
 **FIT1042** (left) and **FIT1038** (right) are DFRobot's SKUs for its
@@ -19,23 +27,43 @@ built-in fail-safe.
 Host frames carry a CRC-8/MAXIM in byte 9, with two exceptions: the
 mode-switch frame puts the mode there instead, and the set-ID frame has no
 checksum at all. Replies carry the same CRC (verified on real hardware,
-though some reference implementations dispute it) — the driver still never
-rejects telemetry on it.
+though some reference implementations dispute it) — by default the driver
+does not reject telemetry on it, but the opt-in strict mode
+(`Bus::with_strict_crc` / `M0601::with_strict_crc`) turns a bad checksum
+into `Ok(None)`.
 
 Telemetry replies come in **two layouts**: a `0x74` query reply carries the
 winding temperature and a coarse 8-bit position, while replies to drive
 frames carry a fine 16-bit position and no temperature. The library decodes
 each reply by the command that elicited it.
 
-Documentation map:
+Documentation map — the full docs live in
+[`docs/content/docs/`](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs)
+(a Hugo site; `cd docs && hugo server` to read it rendered):
 
-- **[USAGE.md](USAGE.md)** — how to use it: hardware setup, every CLI
-  subcommand, and a library cookbook (drive loops, modes, mirroring,
-  testing with mocks, troubleshooting).
-- **[PROTOCOL.md](PROTOCOL.md)** — the full protocol and hardware
-  reference: spec tables, wiring, every frame byte-by-byte, both reply
-  layouts, and the known contradictions between sources.
-- **`cargo doc --open -p m0601`** — the library API contract.
+- **[Getting started](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/getting-started.md)**
+  and the **[first-spin tutorial](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/tutorial.md)**
+  — build, wire, permissions, and a wheel actually turning.
+- **[Safety](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/safety.md)**
+  — what brakes, what coasts, and what will hurt you. Short; read it before the
+  wheel is on the ground.
+- **[CLI guide](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs/cli)**
+  — a page per subcommand: output samples, exit codes, footguns.
+- **[Library guide](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs/library)**
+  — drive loops, modes, telemetry, mirroring, bus budgeting, odometry, testing
+  with mocks.
+- **[Sample code](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs/samples)**
+  — the runnable code in this repo (see below).
+- **[Concepts](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs/concepts)**
+  — why the driver behaves the way it does: the fail-safe, the bus, echoes,
+  stopping, adapter latency.
+- **[Protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md)**
+  — spec tables, wiring, every frame byte-by-byte, both reply layouts, and the
+  known contradictions between sources.
+- **[`docs.rs/m0601`](https://docs.rs/m0601)** (or `cargo doc --open -p m0601`) —
+  the library API contract.
+- **[CHANGELOG.md](https://github.com/dougcalobrisi/m0601-rs/blob/main/CHANGELOG.md)**
+  — what changed, per release.
 
 One rule worth carrying into any code you write against this: **a zero
 setpoint does not mean "stop".** It only does in velocity mode — the same
@@ -74,7 +102,9 @@ down, and the `1`–`5` presets reach 250 RPM.
 ## Usage
 
 Global flags, valid before or after the subcommand: `--port /dev/ttyUSB0`,
-`--id 0x01` (hex or decimal), `--timeout 0.15` (seconds).
+`--id 0x01` (hex or decimal), `--timeout 0.15` (seconds); accepted ranges are in
+the CLI overview page. Data goes to stdout and diagnostics to stderr, so
+`m0601 info > readout.txt` captures only the readout.
 
 ```sh
 m0601 scan                     # discover motor IDs (broadcast)
@@ -83,13 +113,22 @@ m0601 info                     # config + one-shot live readout
 m0601 monitor --hz 5           # live line dashboard, Ctrl+C to stop
 m0601 monitor --csv log.csv    # ... also log rows to CSV
 m0601 control --rpm 100        # full-screen keyboard control (see below)
+m0601 control --accel 1        # ... with the motor's fastest ramp (default 3)
 m0601 drive velocity --rpm 100 --secs 3  # spin at 100 RPM for 3 s, then brake
 m0601 drive current --amps 1.0           # hold ~1 A of torque (until Ctrl-C)
 m0601 drive position --deg 180           # rotate to 180° and hold (needs <10 RPM)
 m0601 set-id --new 0x02        # change the motor's persistent RS485 ID
 m0601 set-id --new 0x02 --yes  # ... skipping the confirmation prompt
 m0601 raw "01 74 00 00 00 00 00 00 00"   # arbitrary frame, CRC auto-added
+m0601 raw --yes "01 64 00 64 00 00 03 00 00"  # a motion frame needs --yes
 ```
+
+`raw` refuses the two command bytes that can move the wheel — `0x64` (drive) and
+`0xA0` (mode switch) — unless you pass `--yes`, and brakes the motor the frame
+addressed (byte 0) on exit when it sends one — except a broadcast `C8` drive
+frame, which commands every motor while a unicast brake covers only one. It still
+has none of `drive`'s other rails: no loop, and no position-mode pre-flight
+check.
 
 `drive` is the scriptable counterpart to `control`: it holds one setpoint in
 one mode — `velocity` (RPM), `current` (amps), or `position` (degrees) —
@@ -123,6 +162,15 @@ cannot prove only one is connected. Expect it to take ~40 s.
 | `V`/`C`/`P` | switch mode: velocity / current / position |
 | `Q` / `Esc` / `Ctrl-C` | quit — forces velocity mode, zeroes, then brakes |
 
+**`control` latches: releasing a key does not stop the wheel.** `F`, `B`, and
+`1`–`5` set a *sustained* setpoint that holds until `S`, `K`, `Q`, or a signal.
+Do not walk away from a spinning wheel expecting it to stop on its own.
+
+`--accel` sets the ramp used for active driving (default `3`, gentler than the
+motor's fastest `1`) — a keystroke commands a large step, and the sharpest ramp
+can trip the 3 A overcurrent protection on a loaded wheel. The *stop* ramp is
+separate; see below.
+
 `P` is refused at 10 RPM or above, and also when no telemetry has arrived —
 without a reading the speed is unknown, not zero. Entering position mode
 seeds the target with the wheel's present angle, so the switch itself never
@@ -153,8 +201,8 @@ motors stop in the same ~300 ms as one), and requests low-latency delivery
 from the kernel to defeat the FTDI 16 ms latency timer.
 `mirrored(true)` makes "positive = robot forward" hold on a mirrored wheel
 by negating velocity/current setpoints and flipping reported speed/current
-signs (position passes through — angle mirroring depends on your mechanical
-convention):
+signs (reported position passes through by default — angle mirroring depends on
+your mechanical convention, so it's opt-in via `position_mirror`):
 
 ```rust
 use std::time::Duration;
@@ -187,7 +235,16 @@ TOML wheel map (`wheels.toml`) validated fail-closed, a single pilot
 thread owning the bus at 55.6 Hz, latched fault handling with manual
 re-arm, a 2×2 terminal dashboard, CSV logging, and a `--dry-run` mode
 that opens no port. Bring-up order: `check --probe` → `monitor` →
-`jog`/`calibrate` → `drive`.
+`jog`/`calibrate` → `drive`. It is not published to crates.io — clone the repo
+and run it from the workspace:
+
+```console
+cargo run -p m0601-quad -- --config m0601-quad/wheels.toml check
+cargo run -p m0601-quad -- --config m0601-quad/wheels.toml drive --dry-run
+```
+
+Both are documented in full under
+[Sample code](https://github.com/dougcalobrisi/m0601-rs/tree/main/docs/content/docs/samples).
 
 ## Wiring checklist (no motors found?)
 
@@ -211,14 +268,14 @@ anchored to that algorithm's published check value (`crc8("123456789") ==
 0xA1`), so no assertion recomputes its own expectation with the code under
 test. A further set of known-answer frames is taken verbatim from two
 independent implementations that have driven real hardware (see
-[PROTOCOL.md](PROTOCOL.md)). Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
+[the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md)). Driver behavior (echo stripping, wrong-ID reply rejection, 5× frame
 repeats, safe-stop sequencing) runs against an in-memory mock transport.
 The `spin_and_stop` hardware test additionally requires
 `M0601_ALLOW_MOTION=1` — it briefly spins the wheel.
 
 ## References
 
-See [PROTOCOL.md](PROTOCOL.md) for the full spec with per-claim sourcing.
+See [the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md) for the full spec with per-claim sourcing.
 
 - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
 - [DDT M0601C-111 vendor sample code](https://github.com/tech-life-hacking/DDT_M0601C_111)
@@ -227,7 +284,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full spec with per-claim sourcing.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/dougcalobrisi/m0601-rs/blob/main/LICENSE).
 
 This project is not affiliated with DFRobot or Direct Drive Tech. It drives
 physical hardware that can cause injury or damage; it comes with no warranty

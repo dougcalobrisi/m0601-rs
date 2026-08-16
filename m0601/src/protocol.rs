@@ -92,8 +92,10 @@ pub fn drive_floor() -> Duration {
 ///
 /// Motor replies carry it too, over the same bytes: a hardware capture
 /// settled that question, and [`Feedback::crc_ok`] reports the result. It
-/// stays informational — telemetry is never *rejected* on it — because the
-/// reference implementations disagree and firmware revisions may differ.
+/// stays informational by default — telemetry is not *rejected* on it —
+/// because the reference implementations disagree and firmware revisions may
+/// differ. Callers who need the opposite trade-off can opt in with
+/// [`parse_feedback_strict`] or [`Bus::with_strict_crc`](crate::Bus::with_strict_crc).
 /// See `PROTOCOL.md` in the repository.
 ///
 /// ```

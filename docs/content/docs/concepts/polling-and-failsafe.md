@@ -18,7 +18,7 @@ own. There is no runaway state to design around, because "no one is commanding m
 resolves to "stop" in hardware. It's a command watchdog that's always on and can't be
 forgotten.
 
-## What this means for your code
+## Implications for your code
 
 Everything else about driving the motor follows from this one property:
 
@@ -33,7 +33,7 @@ Everything else about driving the motor follows from this one property:
   telemetry from the drive frame's own reply instead, or send the query *in addition*
   to the drive frame, never instead of it.
 
-## If you've used another fieldbus
+## Comparison with other fieldbuses
 
 Nothing here is exotic; you've likely met each piece under a different name.
 

@@ -16,13 +16,35 @@ up a motor by hand and reacting to what you see. Its non-interactive twin is
 
 > [!CAUTION]
 > This starts a live control session with no confirmation. Presets reach 250 RPM on a
-> gearless wheel. Clear it first.
+> gearless wheel. Clear it first. → [Safety]({{< relref "../safety" >}})
 
 ## Options
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--rpm` | `100` | the speed the `F` and `B` keys drive at (−330..330) |
+| `--accel` | `3` | velocity ramp: `1` = fastest, larger = gentler, `0` = motor default |
+
+`--accel` defaults to `3` rather than the motor's fastest `1` on purpose. A keystroke
+here commands a *large instantaneous step* — `F` jumps straight to the full preset,
+and `F` → `B` is a complete reversal — and the sharpest ramp can spike current past
+the 3 A bus-overcurrent trip on a loaded wheel. Pass `--accel 1` if you want the
+snappy response and know the wheel is unloaded.
+
+This is the ramp for *active driving* only. The **stop** ramp is separate: `safe_stop`
+uses the library's own moderate `SAFE_STOP_ACCEL`, and `control` always uses that
+default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
+
+`control` is the one subcommand that ignores `--timeout` completely — it opens the
+port with a fixed 50 ms timeout and its loop uses a fixed 6 ms reply wait, so nothing
+you pass globally can stretch a 20 ms cycle.
+
+> [!WARNING]
+> **It latches.** Releasing a key does not stop the wheel. `F`, `B`, and `1`–`5` set a
+> *sustained* setpoint that holds until you press `S`, `K`, or `Q`, or a signal
+> arrives. Do not walk away from a spinning wheel expecting it to stop on its own —
+> it stops on those keys, or when the host stops polling entirely (crash, unplug,
+> power loss), which coasts it rather than braking it.
 
 ## The keymap
 
@@ -67,7 +89,7 @@ and also if no telemetry has arrived at all — an unknown speed is not a zero s
 so `control` fails closed. When it does switch, it seeds the target with the wheel's
 *present* angle, so entering position mode never itself commands a move.
 
-## Trust the motor, not the intent
+## The reported-mode display
 
 The dashboard shows the mode the **motor reports**, and if that ever disagrees with
 what you asked for, the mode line turns **red** and shows both: `Mode: VELOCITY
@@ -84,7 +106,7 @@ angle retained from drive replies (rather than flickering to the coarse 8-bit an
 that arrives with the periodic temperature query), and temperature from that query,
 `--` until the first one lands.
 
-## Stopping is guaranteed on every exit you can survive
+## Exit braking
 
 `Q`, `Esc`, and `Ctrl-C` all quit by forcing velocity mode, zeroing, and braking —
 about 300 ms of frames. So do a panic and a `SIGTERM`/`SIGHUP` (a dropped SSH session

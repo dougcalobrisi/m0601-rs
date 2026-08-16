@@ -83,7 +83,10 @@ pub fn drive(cfg: Config, shared: Arc<Shared>, flags: DriveFlags, warned: bool) 
 
     let mut rover = rover::open(&cfg)?;
     if !rover.low_latency {
-        eprintln!("[!] kernel low-latency not set; poll timing may miss (see USAGE.md)");
+        eprintln!(
+            "[!] kernel low-latency not set; poll timing may miss (see {})",
+            crate::LATENCY_DOC_URL
+        );
     }
 
     // Fail-closed startup: ask "is it CONFIRMED safe?", refuse on any

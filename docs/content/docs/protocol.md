@@ -1,6 +1,6 @@
 ---
 title: Protocol reference
-weight: 30
+weight: 80
 ---
 
 # M0601 protocol & hardware reference
@@ -9,7 +9,7 @@ Everything this repo knows about the DFRobot **M0601** direct-drive hub motor,
 compiled from the official documentation and three independent implementations,
 cross-checked byte-for-byte against this crate's test vectors. Where sources
 disagree, the disagreement is recorded (see [Known
-contradictions](#known-contradictions)) rather than silently resolved.
+contradictions](#known-contradictions-between-sources)) rather than silently resolved.
 
 This is the byte-level reference. For what these frames *mean* and why the driver
 handles them the way it does, see [Concepts]({{< relref "concepts" >}}) — especially
@@ -32,17 +32,27 @@ M0602C, M1502A, DDSM115 — are *not* protocol-guaranteed identical.
 
 ## Electrical & mechanical specs
 
+From the DFRobot product pages (3076/3077, identical tables):
+
 | Parameter | Value |
 |---|---|
-| Operating voltage | 18 V DC |
-| Rated / stall current | 1.25 A / ≤ 2.7 A |
-| No-load / rated / no-load speed | ≤ 0.25 A · 115 rpm · 200 ± 10 rpm |
-| Rated / stall torque | 0.96 N·m / 2.0 N·m |
-| Torque / speed constant | 0.75 N·m/A / 11.1 rpm/V |
+| Operating voltage | 18 V DC (MotorLink's README gives a 12 V minimum) |
+| Rated current | 1.25 A |
+| Stall current | ≤ 2.7 A |
+| No-load current | ≤ 0.25 A (MotorLink's README says ≤ 0.2 A) |
+| Rated speed | 115 rpm |
+| No-load speed | 200 ± 10 rpm |
+| Rated torque | 0.96 N·m |
+| Stall torque | 2.0 N·m |
+| Torque constant | 0.75 N·m/A |
+| Speed constant | 11.1 rpm/V |
 | Encoder resolution | 4096 (relative accuracy 1024) |
-| Protection / temp range | IP54 / −20…45 °C |
+| Protection rating | IP54 |
+| Noise | ≤ 50 dB |
+| Operating temperature | −20 … 45 °C |
 | Wheel diameter | 102 mm |
 | Drive | direct — the wheel is the rotor; no gearbox, no backlash |
+| Mounting | M2.5 thread (wiki: 5 mm depth; MotorLink README: 6 mm), ⌀15.2 mm boss with 8 mm flat |
 
 Note the stall current (≤ 2.7 A) against the current-loop command range (±32767 ≈
 ±8 A): the top of the commandable range is far beyond what the motor can draw, and
@@ -118,7 +128,8 @@ grounds for rejection.
 - **Brake** (byte 7): `0xFF` engages the electric brake (velocity mode only);
   otherwise `0x00`.
 
-Worked examples (ID `0x01`, accel 0 — from `m0601/tests/vectors.rs`):
+Worked examples (ID `0x01`, accel 0) — these are independent implementations' verified
+vectors, reproduced as golden tests in `m0601/tests/vectors.rs`:
 
 ```text
 +100 rpm      01 64 00 64 00 00 00 00 00 4F
@@ -136,8 +147,10 @@ winding temperature).
 ### Mode switch (`0xA0`)
 
 `ID A0 00 00 00 00 00 00 00 <mode>` — **byte 9 is the mode value, not a CRC**.
-Modes: `0x01` current, `0x02` velocity, `0x03` position. No acknowledgement;
-implementations send it **5×**. Switching **into position mode requires < 10 rpm**.
+Modes: `0x01` current, `0x02` velocity, `0x03` position. The motor sends no
+acknowledgement, so implementations commonly send the frame **5×**, ~20 ms apart, to
+be sure it lands (the DDT vendor sample sends it once; the frame is idempotent, so
+repeating is harmless). Switching **into position mode requires < 10 rpm**.
 
 ### Set ID (unaddressed)
 
@@ -147,9 +160,10 @@ ID** — send it with exactly one motor on the bus.
 
 ### Broadcast ID query (unaddressed)
 
-Fixed frame `C8 64 00 00 00 00 00 00 00 DE`. Every motor replies with a
-**drive-layout** telemetry frame beginning with its own ID. Replies are
-unarbitrated: simultaneous answers collide into garbage.
+Fixed frame `C8 64 00 00 00 00 00 00 00 DE` (`0xDE` is its genuine CRC-8/MAXIM, not
+a magic constant). Every motor replies with a **drive-layout** telemetry frame
+beginning with its own ID. Replies are unarbitrated: several motors answering at once
+collide into garbage belonging to none of them.
 
 ## Motor → host telemetry
 
@@ -181,8 +195,13 @@ Reply to a **`0x64` drive frame or `0xC8` broadcast** — bytes 6–7:
 | 6–7 | position | u16 BE; **deg = raw × 360 / 32767** (~0.011° steps) |
 
 The drive reply carries **no temperature** — a parser that decodes byte 6 as °C
-on a drive reply is reading the position high byte. There is no bus-voltage field
-in either layout. The u8 position divides by **255**, not 256.
+on a drive reply is reading the position high byte. (This crate had exactly that bug
+before this reference existed; the DDT vendor sample's `Control_Motor` vs `Get_Motor`
+parsing is what settles the two layouts.) There is no bus-voltage field in either
+layout.
+
+The u8 position divides by **255**, not 256 — `0xFF` ≡ 360° ≡ 0° wrapped — and every
+known implementation agrees on that.
 
 ### Fault byte (byte 8)
 
@@ -195,8 +214,12 @@ in either layout. The u8 position divides by **255**, not 256.
 | `0x10` | Overheat | winding 80 °C | on cooling to 75 °C |
 | `0x20`–`0x80` | reserved | | |
 
-`0x00` means no fault. While a protection is active the motor stops responding to
-drive commands and flags the corresponding bit.
+`0x00` means no fault. Multiple bits can be set at once; while a protection is active
+the motor stops responding to drive commands and flags the corresponding bit.
+
+> **Naming note.** MotorLink labels `0x10` "Troubleshoot"; the DFRobot wiki's protocol
+> image and the navigation_robot C driver both call it the overheat/over-temperature
+> fault. This crate follows the wiki.
 
 ## Modes
 
@@ -206,17 +229,67 @@ drive commands and flags the corresponding bit.
 | Velocity | `0x02` (default) | −330 … +330 (i16) | rpm |
 | Position | `0x03` | 0 … 32767 (u16) | 0° … 360° |
 
-Position mode is single-turn absolute (the 4096-line encoder underlies the
-0–360° range).
+- The rated and no-load speeds (115 / 200 rpm) sit well inside the ±330 command
+  range, so **commanding 330 rpm does not mean reaching it**.
+- Position mode is single-turn absolute (the 4096-line encoder underlies the 0–360°
+  range). Unwrapping it into continuous travel is
+  [`PositionAccumulator`]({{< relref "library/odometry" >}})'s job.
 
-## Known contradictions
+## Known contradictions between sources
 
-Resolved and unresolved disagreements between the sources are documented in full
-in [`PROTOCOL.md`](https://github.com/dougcalobrisi/m0601-rs/blob/main/PROTOCOL.md#known-contradictions-between-sources)
-in the repo. In brief: reply CRC is real but treated as advisory; the accel byte
-is byte 6 (not 4); the set-ID frame carries no CRC; the ≥50 Hz floor is
-empirical; mode-switch/set-ID are sent 5×; and the accel byte's *unit* (rate vs
-time-constant) is unresolved — only its direction (1 = fastest) is relied on.
+The sources do not all agree. Rather than silently pick a winner, each disagreement
+is recorded here with how it was settled — or that it wasn't.
+
+**1. Reply byte 9 — resolved by hardware capture.** The wiki's tables label it CRC8
+and the navigation_robot C driver validates CRC-8/MAXIM on replies; this crate's
+original observation claimed genuine replies fail that check, and the DDT vendor
+sample and MotorLink ignore reply checksums entirely. Running
+`reply_checksum_capture` (`m0601/tests/hardware.rs`) against a real unit settled it —
+**replies do carry a valid CRC-8/MAXIM**, in both layouts:
+
+```text
+0x74 query reply: 01 02 00 37 00 00 1E BB 00 D5  → CRC(bytes 0-8) = D5, matches
+0x64 drive reply: 01 02 00 39 00 00 5D F1 00 6F  → CRC(bytes 0-8) = 6F, matches
+```
+
+(Those two frames also confirm the dual layout with live data: the query's u8
+position `0xBB` → 264.0° and the drive reply's u16 `0x5DF1` → 264.2° are the same
+physical angle through both encodings.) The original "replies fail CRC" observation
+was most likely made against echo-contaminated or mis-framed reply bytes. The
+recommendation is unchanged: **treat the reply CRC as advisory rather than rejecting
+on it** — two of four reference implementations never check it, and firmware
+revisions may differ. The driver follows that default, with a
+[strict opt-in]({{< relref "library/quickstart" >}}) for callers who'd rather drop a
+suspect frame.
+
+**2. Acceleration byte position.** Wiki + DDT vendor sample + navigation_robot:
+**byte 6**. MotorLink's Python examples put it at byte 4 — a bug that never surfaced
+because all its captured vectors use accel 0. Byte 6 is correct.
+
+**3. Set-ID checksum.** MotorLink's README table shows a CRC (`…00 CB`, which *is*
+the CRC-8/MAXIM of that frame) in byte 9, but the wiki, the vendor sample, and
+MotorLink's own `m0601_set_id.py` all send `0x00`. No CRC is correct.
+
+**4. The ≥50 Hz floor** is community/empirical, not official — official docs state
+only the 500 Hz maximum.
+
+**5. Repeat counts.** Mode-switch and set-ID frames: the vendor sample sends once;
+MotorLink and navigation_robot send 5×. Sending 5× is harmless (the frames are
+idempotent) and is what this crate does.
+
+**6. Acceleration byte unit vs direction — unresolved.** The wiki states the unit as
+"1 rpm per 0.1 ms", i.e. a *rate*, under which a larger value would ramp *faster*.
+Every source — the wiki included — also says `1` is the fastest ramp and larger values
+are gentler, which is the behaviour of a *time constant*. The two cannot both hold.
+Not yet resolved against hardware, so this crate documents only the direction, which
+all sources agree on.
+
+**7. Minor spec conflicts.** No-load current ≤ 0.25 A (product page) vs ≤ 0.2 A
+(MotorLink README); mounting thread depth 5 mm (wiki) vs 6 mm (README); supply 18 V
+(wiki/product page) vs a 12 V minimum (MotorLink).
+
+**8. No official PDF datasheet exists.** The wiki's protocol section is published as
+images only.
 
 ## Sources
 

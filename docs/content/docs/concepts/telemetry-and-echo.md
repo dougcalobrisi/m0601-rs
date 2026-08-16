@@ -3,7 +3,7 @@ title: Telemetry and echo
 weight: 3
 ---
 
-# Telemetry, echoes, and a dangerous alignment bug
+# Telemetry and echoes
 
 Two things make decoding a reply less obvious than reading ten bytes off the wire:
 the motor answers in two different layouts, and many USB adapters prepend a copy of
@@ -11,7 +11,7 @@ what you just sent. Get either wrong and you don't get an error — you get a pl
 confidently wrong number. On a motor with real torque, one of those wrong numbers is
 dangerous.
 
-## Two layouts, one command byte apart
+## The two reply layouts
 
 Bytes 0–5, 8, and 9 of a reply are the same in both layouts: address, mode, current,
 speed, faults, checksum. Only bytes 6–7 differ, and which meaning they carry depends
@@ -33,7 +33,7 @@ this crate before the protocol was pinned down: byte 6 was read as temperature o
 drive reply, where it's actually the high byte of the position. The `parse_feedback`
 doctest now demonstrates the double-decode on purpose, as a regression guard.
 
-## Adapter echo, and the alignment trap
+## Adapter echo and frame alignment
 
 Half-duplex USB-RS485 adapters frequently echo the host's own transmission back
 before the motor's reply arrives. So the bytes you read often start with an exact copy
@@ -71,5 +71,7 @@ buffer, or one motor's late answer landing inside another motor's transaction wi
 could be handed back as *this* motor's telemetry — a wheel reporting its neighbor's
 speed. So the driver drops any reply whose address byte isn't the motor it was talking
 to, surfacing it as `Ok(None)`. This guard matters more on a multi-motor bus than the
-CRC does, which is why telemetry is never rejected on its checksum but always on its
-address.
+CRC does, which is why telemetry is always rejected on its address but, by default,
+never on its checksum. Callers who'd rather drop a suspect frame can opt into
+[strict CRC]({{< relref "../library/quickstart" >}}), which turns a bad checksum into
+`Ok(None)` too.

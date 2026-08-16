@@ -3,7 +3,7 @@ title: Drive loops
 weight: 2
 ---
 
-# Drive loops: you own the cadence
+# Drive loops
 
 `drive_velocity`, `drive_current`, and `drive_position` each send **one frame** and
 return. That's the whole method. Motion is sustained only if you keep calling them at
@@ -34,7 +34,7 @@ fn main() -> m0601::Result<()> {
 motor starts coasting between frames, which reads as a wheel that stutters or won't
 hold speed.
 
-## Always `safe_stop` on the way out
+## Stopping on exit
 
 `safe_stop()` is the counterpart to the loop, and you should call it on **every**
 exit path — the normal end, an error, a panic, a signal handler. It's built to run
@@ -53,7 +53,7 @@ mode isn't knowable, it establishes velocity mode itself rather than assuming.
 And if your process dies before `safe_stop` can run? The wheel coasts, because frames
 stopped arriving. Worst case, the fail-safe still catches it.
 
-## Acceleration, and the current spike
+## Acceleration
 
 `drive_velocity` uses acceleration `1` by default — which is the motor's *fastest*
 ramp, not a gentle one. On a loaded wheel a large velocity step at accel 1 can draw a
@@ -78,7 +78,20 @@ motor.drive_velocity(200)?;   // now uses accel 20; drive_velocity_accel still o
 crate documents only the direction — see [the protocol notes]({{< relref
 "../protocol" >}}).)
 
-## Reading while you drive
+## Setpoint ramping: `SlewLimiter`
+
+`accel` ramps the motor toward whatever setpoint it was last given; it does **not**
+bound how fast *you* move that setpoint. A keystroke, a joystick snap, or a mixer
+output that jumps between cycles is still a step change on the wire.
+
+`SlewLimiter` bounds the setpoint's rate of change. It holds no clock — you pass the
+elapsed time per `step`, so the scheduler stays yours. The worked example, the
+constructor's error contract, the two safety rules (stop paths must bypass it; a held
+brake must not let it wind up), why it's for RPM/amps but not position, and why this
+is the driver's job at all, all live in one place:
+[Setpoint shaping]({{< relref "../concepts/setpoint-shaping" >}}).
+
+## Telemetry inside the loop
 
 You don't have to choose between driving and reading — every drive frame's reply
 carries telemetry. `transact` sends a frame and returns the parsed reply in one

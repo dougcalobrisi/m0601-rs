@@ -1,16 +1,16 @@
 ---
-title: Where the driver ends
+title: The driver boundary
 weight: 6
 ---
 
-# Where the driver ends and your robot begins
+# The driver boundary
 
 This crate is a **motor driver**, not a robot framework. Knowing exactly where it
 stops saves you from two opposite mistakes: reaching around it to re-encode things it
 already owns, and waiting for it to grow features that are yours to write. This page
 draws the line and explains why it sits where it does.
 
-## The line
+## The boundary rule
 
 The driver owns three layers, and nothing above them:
 
@@ -29,7 +29,7 @@ The driver owns three layers, and nothing above them:
 Above the single motor and the shared wire, the driver does not go. It has no concept
 of your chassis, your control loop, or your mission.
 
-## What you get at the bus level — use it, don't rebuild it
+## Provided at the bus level
 
 Because the bus is genuinely a protocol concern, the driver already solves the
 multi-motor problems that *look* like they'd be yours to solve. Reach for these before
@@ -48,7 +48,8 @@ writing your own:
   down. [Stopping safely]({{< relref "stopping-safely" >}}) explains why.
 - **Wire-occupancy budgeting.** `bus_period`, `frame_time`, and `drive_floor` are the
   arithmetic for "will N wheels plus their polls fit in my cycle?" — provided as
-  functions so you size the loop, not guess it.
+  functions so you size the loop, not guess it. See
+  [Budgeting the wire]({{< relref "../library/budgeting" >}}).
 - **Reply-layout decoding, mirroring, and multi-turn position.** The driver decodes
   each reply by the command that elicited it, flips speed/current signs for a mirrored
   wheel, and unwraps single-turn angle into a continuous one. If you find yourself
@@ -58,18 +59,18 @@ writing your own:
   valid while a wheel turns under 180° between samples.
   `PositionAccumulator::max_unaliased_rpm(gap)` turns your poll interval into the exact
   speed ceiling, so you compare against it (or re-baseline on a long gap) instead of
-  re-deriving the `30 / gap` relationship yourself.
+  re-deriving the `30 / gap` relationship yourself. See
+  [Odometry]({{< relref "../library/odometry" >}}).
 - **Setpoint slew limiting.** `SlewLimiter` bounds how fast a setpoint may change, so a
   keystroke or a joystick snap becomes a ramp instead of a step that spikes current into
-  the 3 A trip. It carries the two details that are easy to get wrong: stop paths must
-  *bypass* the limit (`reset_to(0.0)`), and a held brake must not let it wind up toward
-  a latched throttle, or release becomes the very lurch it was meant to prevent.
+  the 3 A trip. The two safety rules that make it help rather than hurt are in
+  [Setpoint shaping]({{< relref "setpoint-shaping" >}}).
 - **The set of defined fault bits.** `Faults::KNOWN_MASK` and `Faults::unknown_bits()`
   are the single source of truth for which fault bits this driver understands. Classify
   against them rather than hardcoding a mask like `0x1F`, so a fault bit added to a
   future firmware (and this driver) updates your code for free.
 
-## What the driver leaves to you — on purpose
+## Left to the application
 
 These are **not** missing features. Each is left out because baking in one answer
 would be wrong for some robot:
@@ -96,7 +97,7 @@ would be wrong for some robot:
   a mirror-image wheel's reported *angle* should be reflected (and how) depends on your
   mechanical build, so it's opt-in rather than assumed.
 
-## Where control actually splits
+## The control split
 
 "Closed-loop control is yours" is too blunt to be useful, and taken literally it leads
 people into a real mistake. Control over an M0601 sits at three levels, and only the
@@ -129,13 +130,16 @@ outermost is yours:
 The short version: **don't re-close the motor's loops, do use the driver's shaping, and
 own everything above the wheel.**
 
-## The seams
+## Extension seams
 
 When you do need to reach past the defaults, use the extension points rather than
 forking:
 
 - **`Transport`** — the trait under `Bus`/`M0601`. Swap in a mock, a simulator, or your
   own scheduler; `MockTransport` drives every test in this crate with no hardware.
+  [`m0601-quad`]({{< relref "../samples/quad" >}}) is a worked example of everything on
+  the "yours" list above — kinematics, config, safety policy — built on top of this
+  boundary.
 - **`BusTiming`** — one struct for every pacing/stop tunable, filled from your own
   config.
 - **The pure `protocol` module** — every frame builder, parser, and scaler is public

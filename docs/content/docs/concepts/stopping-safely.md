@@ -9,7 +9,7 @@ Stopping a motor sounds like it should be the easy part — send zero. It isn't,
 because on this motor zero doesn't mean what you'd assume, and because a stop often
 has to run from the worst possible moment: a panic, a signal, a dropped connection.
 
-## Why `safe_stop` switches modes before it sends anything
+## The mode switch before the stop
 
 A zero setpoint means "stop" only in velocity mode. The identical zero-valued drive
 frame means "rotate to 0°" in position mode — a stop command that could spin the wheel
@@ -52,7 +52,7 @@ let bus = Bus::open("/dev/ttyUSB0", timeout)?
 Like the idle gap, the timing lives on the shared bus: set it at open time and every
 motor handle you mint from the bus uses it.
 
-## Stopping a whole vehicle without yawing
+## Vehicle-wide stops
 
 Stop four wheels one at a time and you've built a bug. Braking wheel 1 while wheels
 2–4 still coast means, on a skid-steer chassis, one side biting while the other rolls
@@ -71,7 +71,7 @@ where "keep telling the *other* motors to stop" beats bailing out on the first o
 didn't answer. And because `Bus` is `Clone`, a signal handler can hold its own handle
 and stop the entire vehicle from outside the normal control flow.
 
-## The one stop nothing can make
+## The limits of software stops
 
 Every graceful and not-so-graceful exit brakes: normal completion, `?` errors, panics,
 `Ctrl-C`, `SIGTERM`, `SIGHUP`. The exceptions are `SIGKILL` and losing power, where no

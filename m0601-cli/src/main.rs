@@ -63,7 +63,7 @@ enum Cmd {
         /// Velocity ramp: 1 = fastest, larger = gentler, 0 = motor default.
         /// Default is gentler than 1 so a keystroke's large step is less
         /// likely to trip the motor's overcurrent protection on a loaded wheel.
-        #[arg(long, default_value_t = cmd::control::DEFAULT_DRIVE_ACCEL)]
+        #[arg(long, default_value_t = cmd::control::CONTROL_DEFAULT_ACCEL)]
         accel: u8,
     },
     /// Drive one mode at a fixed setpoint (scriptable; Ctrl-C or --secs stops)

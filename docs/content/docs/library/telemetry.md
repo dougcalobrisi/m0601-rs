@@ -3,7 +3,7 @@ title: Telemetry
 weight: 4
 ---
 
-# Telemetry: two layouts, one accumulator
+# Telemetry
 
 Every frame the motor replies to carries telemetry, including drive frames — so a
 50 Hz loop can read while it commands. `transact` is the method for that: send a
@@ -35,7 +35,7 @@ precise angle lives — about 128× finer. Neither carries both. The driver deco
 reply according to the command that elicited it, so `Feedback` always means the right
 thing; you never have to guess which layout you're holding.
 
-## The flicker problem, and `Telemetry`
+## The `Telemetry` accumulator
 
 Now put those together in a real loop: you `transact` a drive frame every cycle for
 control, and slip in a `query()` every tenth cycle to refresh temperature. If you
@@ -58,9 +58,13 @@ if let Some(fb) = motor.transact(&frame, wait)? {
 // tel.position_deg keeps the fine angle rather than downgrading to the 8-bit one.
 ```
 
-This is exactly what the CLI's `control` and `drive` do to keep their dashboards from
-strobing. If you're building any loop that mixes drive frames and periodic queries,
-reach for `Telemetry` rather than reconciling the layouts yourself.
+This is exactly what the CLI's `control` and [`m0601-quad`]({{< relref "../samples/quad"
+>}}) do to keep their dashboards from strobing — both hold a `Telemetry` in their shared
+state. (`drive` predates the type and hand-rolls a thinner version of the same idea: a
+local `last_temp` and a `Feedback` it only ever refreshes from drive replies. That works,
+but it is precisely the reconciliation `Telemetry` exists to save you.) If you're building
+any loop that mixes drive frames and periodic queries, reach for `Telemetry` rather than
+doing it by hand.
 
 ## Faults
 
@@ -68,5 +72,8 @@ reach for `Telemetry` rather than reconciling the layouts yourself.
 `Display` that spells them out (`SensorErr | Overcurrent`). Any bit outside the
 documented set is shown as hex rather than dropped, so the motor can never report a
 fault you don't see. The trip and release thresholds are in the [protocol
-reference]({{< relref "../protocol" >}}); the short version is that each protection
-auto-resets about five seconds after the condition clears.
+reference]({{< relref "../protocol" >}}); the short version is that the four electrical
+and mechanical protections auto-reset about five seconds after the *trip* — not after
+the condition clears, so a fault that persists simply re-trips — while overheat
+(`0x10`) has no timer at all and releases only when the winding cools from its 80 °C
+trip back to 75 °C.

@@ -79,7 +79,8 @@ fn zero_min_gap_restores_back_to_back_sends() {
 #[test]
 fn the_gap_holds_across_threads_and_cloned_handles() {
     // Two threads each driving their own wheel through cloned handles —
-    // the USAGE.md scenario. The gap must be a property of the shared
+    // the docs/content/docs/library/multi-motor.md scenario ("Frame
+    // spacing across handles"). The gap must be a property of the shared
     // port, not of any one handle, or the two threads' frames can land
     // back-to-back and corrupt on the half-duplex wire.
     let gap = Duration::from_millis(10);

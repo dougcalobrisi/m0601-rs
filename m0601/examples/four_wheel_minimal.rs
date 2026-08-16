@@ -16,7 +16,16 @@
 
 use std::time::{Duration, Instant};
 
-use m0601::{Bus, M0601, Mode, SerialTransport};
+use m0601::{Bus, M0601, Mode, SerialTransport, bus_period, drive_floor};
+
+/// Enforced idle gap between frames, tightened from the 2.5 ms default so the
+/// cycle below fits. The default's turnaround allowance is an estimate; a real
+/// deployment measures its own bus rather than copying this number.
+const MIN_GAP: Duration = Duration::from_millis(2);
+
+/// How long a poll waits for the motor's reply — short on purpose, because
+/// every millisecond here is a millisecond of the cycle's budget.
+const REPLY_WAIT: Duration = Duration::from_millis(2);
 
 /// Four wheels: RS485 id and whether this corner is a mirror-image build
 /// (the right side of the chassis). `mirrored(true)` makes `+rpm` mean
@@ -49,8 +58,10 @@ fn main() -> m0601::Result<()> {
     };
 
     // One shared bus. The generous open timeout is the backstop; the drive
-    // loop below passes its own short reply wait per poll.
-    let bus = Bus::open(&port, Duration::from_millis(150))?;
+    // loop below passes its own short reply wait per poll. The idle gap is
+    // tightened from the 2.5 ms default so four drives plus one poll fit the
+    // 20 ms cycle below — see the budget assertion after the handles.
+    let bus = Bus::open(&port, Duration::from_millis(150))?.with_min_gap(MIN_GAP);
     let ids: Vec<u8> = WHEELS.iter().map(|&(id, _)| id).collect();
 
     // One handle per wheel, sign convention applied once at construction.
@@ -70,8 +81,18 @@ fn main() -> m0601::Result<()> {
     // Drive all four at 60 RPM for one second, resending every ~20 ms (the
     // 50 Hz floor — a wheel coasts if it goes longer than that between
     // frames), and polling one wheel per cycle round-robin with a short wait.
+    //
+    // Budget the wire before moving: four drive frames plus one poll need
+    // ~17.2 ms, which has to fit inside the cycle, and the cycle has to stay
+    // at or under the 50 Hz floor. Failing here is failing in the light —
+    // the alternative is discovering it as a wheel that stutters.
     let cycle = Duration::from_millis(20);
-    let reply_wait = Duration::from_millis(5);
+    let need = bus_period(WHEELS.len() as u32, 1, bus.min_gap(), REPLY_WAIT);
+    assert!(
+        need < cycle && cycle <= drive_floor(),
+        "cycle {cycle:?} cannot carry {need:?} of bus traffic under the {:?} floor",
+        drive_floor()
+    );
     let start = Instant::now();
     let mut k = 0usize;
     while start.elapsed() < Duration::from_secs(1) {
@@ -79,7 +100,7 @@ fn main() -> m0601::Result<()> {
         for wheel in &mut wheels {
             wheel.drive_velocity(60)?;
         }
-        if let Some(fb) = wheels[k].query_with(reply_wait)? {
+        if let Some(fb) = wheels[k].query_with(REPLY_WAIT)? {
             println!(
                 "wheel {} -> {:+} RPM, {} faults",
                 fb.id, fb.speed_rpm, fb.faults

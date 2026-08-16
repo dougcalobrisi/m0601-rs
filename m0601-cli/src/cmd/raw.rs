@@ -58,6 +58,25 @@ fn brake_target(frame: &Frame, id: u8) -> u8 {
     }
 }
 
+/// The line printed after the exit brake, describing *which* motor it reached.
+///
+/// Keyed on whether [`brake_target`] took byte 0 or fell back to `--id`, not on
+/// byte 0 alone: `0x00` and `0xFF` are reserved, not broadcast, yet they fall
+/// back exactly as `0xC8` does, and claiming the brake reached the addressed
+/// motor would be wrong for all three.
+fn exit_brake_note(frame: &Frame, brake_id: u8) -> String {
+    if brake_id == frame[0] {
+        format!("(motion frame — braked motor 0x{brake_id:02X} on exit)")
+    } else if frame[0] == 0xC8 {
+        format!("(broadcast motion frame — braked only motor 0x{brake_id:02X}; other motors coast)")
+    } else {
+        format!(
+            "(frame addressed 0x{:02X}, not a unicast ID — braked the --id motor 0x{brake_id:02X} on exit)",
+            frame[0]
+        )
+    }
+}
+
 pub fn run(port: &str, id: u8, timeout: Duration, hex: &str, yes: bool) -> m0601::Result<ExitCode> {
     let frame = match parse_hex_frame(hex) {
         Ok(f) => f,
@@ -142,13 +161,7 @@ fn run_on_bus<T: Transport>(
         if let Ok(mut target) = bus.motor(brake_id) {
             target.safe_stop();
         }
-        if frame[0] == 0xC8 {
-            println!(
-                "(broadcast motion frame — braked only motor 0x{brake_id:02X}; other motors coast)"
-            );
-        } else {
-            println!("(motion frame — braked motor 0x{brake_id:02X} on exit)");
-        }
+        println!("{}", exit_brake_note(frame, brake_id));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -161,7 +174,7 @@ mod tests {
     use m0601::protocol::frame_brake;
     use m0601::{Bus, MockTransport};
 
-    use super::{brake_target, parse_hex_frame, run_on_bus};
+    use super::{brake_target, exit_brake_note, parse_hex_frame, run_on_bus};
 
     #[test]
     fn nine_bytes_get_crc_appended() {
@@ -221,6 +234,30 @@ mod tests {
         assert_eq!(brake_target(&reserved_zero, 0x03), 0x03);
         let reserved_ff = parse_hex_frame("FF 64 00 64 00 00 01 00 00").unwrap();
         assert_eq!(brake_target(&reserved_ff, 0x03), 0x03);
+    }
+
+    #[test]
+    fn exit_brake_note_never_claims_a_fallback_brake_hit_the_addressed_motor() {
+        let unicast = parse_hex_frame("02 64 00 64 00 00 01 00 00").unwrap();
+        assert_eq!(
+            exit_brake_note(&unicast, brake_target(&unicast, 0x01)),
+            "(motion frame — braked motor 0x02 on exit)"
+        );
+        let broadcast = parse_hex_frame("C8 64 00 64 00 00 01 00 00").unwrap();
+        assert_eq!(
+            exit_brake_note(&broadcast, brake_target(&broadcast, 0x01)),
+            "(broadcast motion frame — braked only motor 0x01; other motors coast)"
+        );
+        // The reserved addresses fall back too, and must say so rather than
+        // reporting a brake on the address that was typed.
+        for hex in ["00 64 00 64 00 00 01 00 00", "FF 64 00 64 00 00 01 00 00"] {
+            let reserved = parse_hex_frame(hex).unwrap();
+            let note = exit_brake_note(&reserved, brake_target(&reserved, 0x03));
+            assert!(
+                note.contains("not a unicast ID") && note.contains("0x03"),
+                "reserved address note was {note:?}"
+            );
+        }
     }
 
     const TIMEOUT: Duration = Duration::from_millis(50);

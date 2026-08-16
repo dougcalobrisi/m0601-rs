@@ -1,6 +1,6 @@
 ---
 title: Concepts
-weight: 25
+weight: 70
 bookCollapseSection: true
 ---
 
@@ -24,6 +24,8 @@ Each page stands alone, but they build on each other roughly in this order:
   switching modes, and how a whole vehicle stops without yawing.
 - **[Latency]({{< relref "latency" >}})** — the FTDI 16 ms timer that quietly breaks
   short reply windows, and the two ways the driver defeats it.
+- **[Setpoint shaping]({{< relref "setpoint-shaping" >}})** — the motor's own ramps,
+  the host-side `SlewLimiter`, and why a fail-safe must never ramp.
 - **[Where the driver ends]({{< relref "driver-boundary" >}})** — what this crate owns
   (the wire, the bus, one motor) versus what it deliberately leaves to your robot, and
   the seams for reaching past the defaults.

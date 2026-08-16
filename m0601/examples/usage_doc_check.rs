@@ -1,10 +1,11 @@
-//! Compile check for the code examples in USAGE.md — not meant to be run.
+//! Compile check for the code examples under `docs/content/docs/library/` — not
+//! meant to be run.
 #![allow(dead_code, clippy::unwrap_used)]
 
 use std::time::{Duration, Instant};
 
-use m0601::protocol::frame_velocity;
-use m0601::{Bus, M0601, MockTransport, Mode};
+use m0601::protocol::{drive_floor, frame_velocity};
+use m0601::{Bus, M0601, MockTransport, Mode, PositionAccumulator, PositionMirror, bus_period};
 
 fn query_example() -> m0601::Result<()> {
     let mut motor = M0601::open("/dev/ttyUSB0", 0x01, Duration::from_millis(150))?;
@@ -87,9 +88,55 @@ fn timing_example() -> m0601::Result<()> {
     Ok(())
 }
 
+fn strict_crc_example() -> m0601::Result<()> {
+    // quickstart.md: the flag is copied into each M0601 at `motor()` time.
+    let timeout = Duration::from_millis(150);
+    let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_strict_crc(true);
+    let motor = bus.motor(0x01)?;
+    assert!(motor.strict_crc());
+
+    let mut other = bus.motor(0x02)?.with_strict_crc(false); // override one handle
+    other.set_strict_crc(true); // or flip it later
+    Ok(())
+}
+
+fn position_mirror_example() -> m0601::Result<()> {
+    // multi-motor.md: a mirror-image wheel's angle should count up with its speed.
+    let bus = Bus::open("/dev/ttyUSB0", Duration::from_millis(150))?;
+    let _right = bus
+        .motor(0x02)?
+        .mirrored(true)
+        .position_mirror(PositionMirror::Reflect); // default is PassThrough
+    Ok(())
+}
+
+fn odometry_example(motor: &mut M0601, reply_wait: Duration) -> m0601::Result<()> {
+    // odometry.md: unwrap the single-turn angle into a continuous one.
+    let mut odo = PositionAccumulator::new();
+    if let Some(fb) = motor.query_with(reply_wait)? {
+        let travelled_deg = odo.update(fb.position_deg);
+        println!("{travelled_deg:.1}° ({:.2} rev)", odo.revolutions());
+    }
+    // A 20 ms poll resolves up to 1500 RPM — far above the motor's 330 RPM ceiling.
+    let ceiling = PositionAccumulator::max_unaliased_rpm(Duration::from_millis(20));
+    assert!(ceiling > 330.0);
+    Ok(())
+}
+
+fn budgeting_example(bus: &Bus, reply_wait: Duration) {
+    // budgeting.md: a startup assertion — fail at launch, not mid-drive.
+    let cycle = Duration::from_millis(18);
+    let need = bus_period(4, 1, bus.min_gap(), reply_wait);
+    assert!(
+        need < cycle && cycle <= drive_floor(),
+        "cycle {cycle:?} cannot carry {need:?} of bus traffic under the {:?} floor",
+        drive_floor()
+    );
+}
+
 fn slew_example() -> m0601::Result<()> {
-    // Host-side setpoint ramp: bounds how fast *we* move the setpoint, which
-    // the motor's `accel` byte does not. No clock — the caller passes elapsed.
+    // setpoint-shaping.md: bounds how fast *we* move the setpoint, which the
+    // motor's `accel` byte does not. No clock — the caller passes elapsed.
     let cycle = Duration::from_millis(20);
     let mut ramp = m0601::SlewLimiter::new(300.0)?; // 300 RPM/s => 6 RPM/cycle
     let target = 250.0;
@@ -106,7 +153,7 @@ fn slew_example() -> m0601::Result<()> {
 fn low_latency_example() -> m0601::Result<()> {
     let transport = m0601::SerialTransport::open("/dev/ttyUSB0", Duration::from_millis(150))?;
     if !transport.low_latency() {
-        eprintln!("[!] low-latency not set; see the udev rule in USAGE.md");
+        eprintln!("[!] low-latency not set; see docs/content/docs/concepts/latency.md");
     }
     Ok(())
 }

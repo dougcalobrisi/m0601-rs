@@ -33,6 +33,13 @@ use clap::{Parser, Subcommand};
 use crate::config::Config;
 use crate::state::Shared;
 
+/// Where runtime messages send the operator for the low-latency setup.
+///
+/// A full URL, not a repo-relative path: anyone running an installed binary
+/// has no checkout to look in. Same reason the README links this way.
+pub const LATENCY_DOC_URL: &str =
+    "https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/concepts/latency.md";
+
 #[derive(Parser)]
 #[command(
     name = "m0601-quad",

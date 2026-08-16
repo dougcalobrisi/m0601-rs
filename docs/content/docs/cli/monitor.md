@@ -27,6 +27,14 @@ doing what you expect.
 The rate is held by measuring how long each poll took and sleeping the remainder, so
 `--hz 20` really means one reading every 50 ms, not "as fast as possible."
 
+`--hz` is honest even on a slow or silent motor. Each poll waits a short, bounded
+reply window — 6 ms, shortened further if the poll interval or `--timeout` is smaller
+— rather than the full `--timeout`. Without that bound a silent motor would collapse
+the effective rate to roughly `1/--timeout` regardless of what you asked for, so
+`--hz 100` against a dead bus would quietly run at about 6 Hz. The error path paces
+off the same elapsed clock as the success path, so a failing cycle doesn't over-sleep
+either.
+
 ## Reading the line
 
 ```
@@ -36,7 +44,7 @@ The rate is held by measuring how long each poll took and sleeping the remainder
 Timestamp, a running count, the reported mode, and the decoded telemetry. `OK`
 becomes `FAULT <names>` (names joined with ` | `) if a protection bit is set.
 
-## It's built to survive a rough bus
+## Behavior on a rough bus
 
 RS485 drops the occasional frame, and a long-running monitor shouldn't flap or die
 because of it. Two behaviors handle that:
@@ -56,7 +64,8 @@ With `--csv`, every reading is appended as a row under this header:
 timestamp,motor_id,mode,speed_rpm,current_a,temp_c,position_deg,error_code,error_str,raw_hex
 ```
 
-Two things to rely on:
+`timestamp` is local wall-clock time formatted `%Y-%m-%d %H:%M:%S`. Two things to
+rely on:
 
 - **The schema is a stable contract.** Downstream logs and scripts depend on these
   columns and their order, so they don't change casually.
@@ -74,6 +83,17 @@ you want to keep them.
 `Ctrl-C`, `SIGTERM`, or `SIGHUP` all stop the loop cleanly, flush and close the CSV,
 and print `Saved N rows to log.csv`. Since `monitor` never drives the motor, there's
 nothing to brake — stopping it just stops the watching.
+
+If the signal handler can't be installed, `monitor` says so up front:
+
+```
+[!] could not install signal handler (...); Ctrl-C will terminate abruptly
+    (CSV rows are already flushed per line, so none are lost).
+```
+
+The consequence is cosmetic here, unlike in [`drive`]({{< relref "drive" >}}): you
+lose the closing `Stopped.` / `Saved N rows` summary, but every row written is
+already on disk.
 
 ## See also
 

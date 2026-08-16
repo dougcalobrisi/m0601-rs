@@ -1,6 +1,6 @@
 ---
 title: Getting started
-weight: 2
+weight: 10
 ---
 
 # Getting started
@@ -15,6 +15,10 @@ You need Rust **1.88** or newer — the crate uses edition 2024 and let-chains, 
 older toolchains won't compile it. Linux is the tested platform; the serial layer
 is portable, but the device paths and the `dialout` group below are Linux-isms.
 
+On the hardware side: **18 V DC** motor power and a USB–RS485 adapter. DFRobot ships
+the RainbowLink TEL0185; any decent FTDI-based dongle works, and an FTDI one lets the
+driver fix the [latency timer]({{< relref "concepts/latency" >}}) for you.
+
 ```sh
 git clone https://github.com/dougcalobrisi/m0601-rs.git
 cd m0601-rs
@@ -26,7 +30,7 @@ The install builds the `m0601-cli` crate, whose binary is named `m0601`. The
 library crate (also `m0601`) is a separate workspace member you depend on from your
 own project — see the [library guide]({{< relref "library" >}}).
 
-## Wiring, and why each wire matters
+## Wiring
 
 The motor has two cables: a 2-pin power cable and a 4-pin signal cable. Getting any
 of the following wrong produces "nothing on the bus," so it's worth doing
@@ -73,7 +77,10 @@ connection, and they're valid before *or* after the subcommand:
 |---|---|---|
 | `--port` | `/dev/ttyUSB0` | serial device path |
 | `--id` | `0x01` | motor address (hex `0x01` or decimal `1`) |
-| `--timeout` | `0.15` | reply wait, in seconds (0–3600) |
+| `--timeout` | `0.15` | reply wait, in seconds |
+
+The accepted ranges (and the validation rules behind them) live in the
+[CLI overview]({{< relref "cli" >}}).
 
 Motors ship at ID `0x01`, so the defaults Just Work for a single fresh motor. Once
 you have more than one on the bus, give each a unique address with

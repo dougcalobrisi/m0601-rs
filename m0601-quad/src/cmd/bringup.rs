@@ -49,9 +49,9 @@ pub fn check(cfg: &Config, probe: bool, shared: &Arc<Shared>) -> CmdResult {
     println!(
         "port open; kernel low-latency: {}",
         if rover.low_latency {
-            "yes"
+            "yes".to_owned()
         } else {
-            "NO — see the udev rule in USAGE.md"
+            format!("NO — see the udev rule in {}", crate::LATENCY_DOC_URL)
         }
     );
     if let Some(timer) = read_latency_timer(&cfg.bus.port) {

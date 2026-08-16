@@ -10,8 +10,9 @@ port = "/dev/ttyUSB1"
 cycle_ms = 18.0     # full 4-wheel cycle; 55.6 Hz. Above 20 ms a wheel's
                     # drive interval drops below the 50 Hz floor and it
                     # coasts a little every cycle. 18 leaves 2 ms of margin.
-                    # NB a poll cycle needs ~16.3 ms of this (4 drives + 1
-                    # poll, each with the enforced gap, at reply_wait 2.0),
+                    # NB a poll cycle needs ~17.2 ms of this (4 drives + 1
+                    # poll, each with the enforced gap, at reply_wait 2.0 —
+                    # `check` prints the exact figure),
                     # so `check` warns that cycle slack is thin. The 20 ms
                     # floor caps the
                     # total budget: more cycle slack costs coast margin,

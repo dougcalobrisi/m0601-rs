@@ -3,7 +3,7 @@ title: Latency
 weight: 5
 ---
 
-# Latency: the 16 ms that breaks everything
+# Adapter latency
 
 Here's a failure that looks like a protocol problem but is really a USB one. You send
 a query, wait a reasonable 6 ms for the reply, read the port — and get nothing. Do it
@@ -20,7 +20,7 @@ every time, and the bus looks dead.
 
 The driver attacks this from two directions.
 
-## Ask the kernel to shrink the timer
+## Shrinking the latency timer
 
 On Linux, `SerialTransport::open` automatically requests low-latency delivery — it
 sets `ASYNC_LOW_LATENCY` on the tty, which tells the `ftdi_sio` driver to program the
@@ -43,7 +43,7 @@ and confirm it:
 cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # want 1, not 16
 ```
 
-## Never block on data that hasn't come
+## Avoiding blocking reads
 
 The timer is only half of it. The read strategy matters just as much, and it's a
 subtle one. After sending, the driver waits the reply window, then asks the OS *how

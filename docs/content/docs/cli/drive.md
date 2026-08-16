@@ -49,7 +49,7 @@ A big velocity step at accel 1 on a loaded wheel can spike current into the 3 A
 protection and trip it. If a run keeps faulting out the instant it starts, soften
 the ramp.
 
-## Position mode checks before it commits
+## Position-mode pre-flight check
 
 Switching into position mode is only legal below 10 RPM, so `drive position` does a
 single pre-flight query first — the one place it waits your full `--timeout` rather
@@ -68,31 +68,61 @@ or, if the bus is silent:
 A silent bus means an unknown speed, and an unknown speed is not a slow one, so it
 refuses. Both cases exit non-zero.
 
-## While it runs
+## Runtime readout
 
 You get a one-line readout — mode, speed, current, position, temperature, faults —
 refreshed about ten times a second. Winding temperature isn't in a drive reply, so
-`drive` slips in an extra query every tenth cycle to keep it current. A transient
-bus error prints `[!] bus error: ... (still driving)` and the loop keeps going
-rather than dropping the wheel. It ends with:
+`drive` slips in an *extra* query every tenth cycle (never in place of a drive frame)
+to keep it current. It ends with:
 
 ```
 Stopped and braked after 3.0 s.
 ```
 
-## The braking guarantee, and its one gap
+### Transient errors are ridden out; persistent ones stop the run
+
+A one-off bus hiccup must not abort a run, so an error prints a retry notice on
+stderr and the loop continues:
+
+```
+[!] bus error: ... (retrying)
+```
+
+But an error that *keeps* happening — the adapter unplugged mid-run — means frames
+are no longer reaching the motor at all, and a loop that spun forever claiming to
+drive would be lying. After **50 consecutive** errors (~1 s at 50 Hz) `drive` gives
+up:
+
+```
+[x] bus error 50x: ... — frames are not reaching the motor; stopping.
+```
+
+The stop guard still runs on the way out, so the wheel is braked if it's reachable at
+all. A single reply that simply doesn't arrive (`Ok(None)`) is not an error and
+resets the counter — only hard I/O failures count.
+
+Both notices go to **stderr**, so `m0601 drive velocity --rpm 100 2>/dev/null` keeps
+only the live status stream on stdout.
+
+## The braking guarantee
 
 The moment `drive` sends its first frame, it arms a stop guard that brakes on
 *every* subsequent exit path — normal completion, a `?` error mid-loop, `Ctrl-C`, a
 panic. It forces velocity mode, zeroes, and brakes (~300 ms).
 
-The gap is `SIGTERM`/`SIGHUP` when the signal handler couldn't be installed. `drive`
-tries to install one and, if it fails, warns you outright:
+The gap opens only if the signal handler couldn't be installed. `drive` tries to
+install one and, if it fails, warns you outright:
 
 ```
-[!] could not install signal handler (...); a SIGTERM/SIGHUP will coast the motor
-    rather than brake it. Ctrl-C from the terminal still stops it.
+[!] could not install signal handler (...); a signal (Ctrl-C, SIGTERM, SIGHUP) will
+    now coast the motor rather than brake it. --secs still brakes on completion.
 ```
+
+Read that carefully: without the handler, **`Ctrl-C` is in the gap too**. A signal
+terminates the process outright, so nothing runs and the wheel coasts. Only a run
+that reaches its own `--secs` deadline — or one that exits via `?` or a panic, which
+still unwind through the stop guard — brakes. This is why a bounded `--secs` run is
+the safer shape for an unattended script.
 
 And as always, `SIGKILL` and power loss coast the wheel — nothing runs to brake it.
 

@@ -74,8 +74,10 @@
 //!
 //! Current scales ×8/32767 to amps; the 8-bit position ×360/255 and the
 //! 16-bit position ×360/32767 to degrees. Replies carry a CRC-8/MAXIM in
-//! byte 9 (verified on hardware), but telemetry is **never rejected on
-//! it** — [`Feedback::crc_ok`] is informational only; see `PROTOCOL.md`.
+//! byte 9 (verified on hardware). **By default** telemetry is not rejected
+//! on it — [`Feedback::crc_ok`] is informational — but the opt-in strict
+//! mode ([`Bus::with_strict_crc`] / [`M0601::with_strict_crc`]) turns a bad
+//! checksum into `Ok(None)`. See `PROTOCOL.md`.
 //!
 //! # Multiple motors on one bus
 //!
@@ -88,7 +90,9 @@
 //! motors put ≥N×50 frames/s (plus replies, plus gaps) through one bus.
 //! [`bus_period`] computes that occupancy from [`frame_time`] and the gap;
 //! a loop's cycle must exceed it yet stay within [`drive_floor`]. See
-//! `USAGE.md` for the worked arithmetic.
+//! [Budgeting the wire] for the worked arithmetic.
+//!
+//! [Budgeting the wire]: https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/library/budgeting.md
 //!
 //! Coming from another fieldbus or motor-control ecosystem, the concepts
 //! map directly:
@@ -154,12 +158,12 @@
 //!
 //! # References
 //!
-//! The repository's [`PROTOCOL.md`] is the full protocol and hardware
+//! The repository's [protocol reference] is the full protocol and hardware
 //! reference, with per-claim sourcing and the known contradictions between
-//! sources (every other `PROTOCOL.md` mention in these docs points there).
-//! Primary materials:
+//! sources (every `PROTOCOL.md` mention in these docs points there — the
+//! root `PROTOCOL.md` is now a pointer to that page). Primary materials:
 //!
-//! [`PROTOCOL.md`]: https://github.com/dougcalobrisi/m0601-rs/blob/main/PROTOCOL.md
+//! [protocol reference]: https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md
 //!
 //! - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
 //! - [DDT M0601C-111 vendor sample](https://github.com/tech-life-hacking/DDT_M0601C_111)

@@ -21,7 +21,7 @@ this command. The new address is written to flash and survives power cycles.
 | `--new <id>` | *(required)* | the new address, `0x01..0xFE` (hex or decimal) |
 | `--yes` | off | skip the confirmation prompt |
 
-## Why it insists on exactly one motor
+## The one-motor guard
 
 The set-ID frame is **unaddressed**. It carries no target — every motor that hears
 it takes the new address. Put two motors on the bus and run `set-id` once, and now
@@ -37,8 +37,14 @@ Its guard is an **exhaustive scan of all 254 addresses** before it writes:
   Port: /dev/ttyUSB0  ->  New ID: 0x05 (5)
 ====================================================
   WARNING: only ONE motor may be on the bus. ID is persistent.
-  Checking the bus is not shared (polling all 254 IDs)... done.
+  Do not connect another motor between this check and the write.
+  Checking the bus is not shared (polling all 254 IDs):
+  [############------------------] 0x66
 ```
+
+That last line is the same live progress bar [`scan`]({{< relref "scan" >}}) draws — it
+redraws in place as the poll walks the address space, and is erased once the scan
+finishes, so what you're left looking at is the `[ok] Current ID:` line below it.
 
 Why all 254, and not the fast broadcast? Because a broadcast scan can't tell one
 motor from several answering at once — their replies collide. The only way to *prove*

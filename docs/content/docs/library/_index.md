@@ -1,6 +1,6 @@
 ---
 title: Library
-weight: 20
+weight: 50
 bookCollapseSection: true
 ---
 
@@ -28,7 +28,7 @@ Pin to something reproducible with `rev`, `tag`, or `branch` (defaults to `main`
 m0601 = { path = "../m0601-rs/m0601" }
 ```
 
-## The shape of the API
+## API shape
 
 Two types carry most of the work:
 
@@ -42,10 +42,25 @@ Two types carry most of the work:
   more than one motor.
 
 Supporting cast: `Feedback` and `Telemetry` for parsed replies, `Mode` and `Faults`
-for control state, and the `Transport` trait — `SerialTransport` on hardware,
-`MockTransport` in [tests]({{< relref "testing" >}}).
+for control state, `PositionAccumulator` for [odometry]({{< relref "odometry" >}}),
+`SlewLimiter` for [setpoint shaping]({{< relref "../concepts/setpoint-shaping" >}}),
+and the `Transport` trait — `SerialTransport` on hardware, `MockTransport` in
+[tests]({{< relref "testing" >}}).
 
-## The contract that surprises people
+`Bus` also carries the whole-bus operations the CLI is built from, so you rarely need
+to hand-build a frame: `bus.scan(range, progress)` returns a `ScanReport { ids,
+garbled }`, `bus.set_id(new_id)` performs the unaddressed rename, and `send_raw` (on
+either type) puts arbitrary bytes on the wire. Errors are one `Error` enum —
+`Serial`, `Io`, `InvalidId`, `InvalidFrameLen`, `InvalidSlewRate` — with
+`is_permission_denied()` for the `dialout` case.
+
+The exhaustive surface is rustdoc's job:
+
+```sh
+cargo doc --open -p m0601
+```
+
+## The `Ok(None)` contract
 
 **A silent bus is not an error.** A motor that doesn't reply — wrong ID, unpowered,
 a scan probe to an empty address — comes back as `Ok(None)`, never `Err`. An `Err`
@@ -61,16 +76,39 @@ match motor.query()? {
 
 ## Pages
 
+They run in reading order, in four groups.
+
+**One motor** — everything you need for a single wheel:
+
 - **[Quickstart]({{< relref "quickstart" >}})** — read a motor without moving it.
 - **[Drive loops]({{< relref "drive-loops" >}})** — the 50 Hz cadence and
   `safe_stop`.
 - **[Modes]({{< relref "modes" >}})** — velocity, current, position.
+
+**Reading the motor back:**
+
 - **[Telemetry]({{< relref "telemetry" >}})** — the two reply layouts and the
   accumulator that reconciles them.
+- **[Odometry]({{< relref "odometry" >}})** — `PositionAccumulator` and the aliasing
+  bound on unwrapping a single-turn angle.
+
+**More than one motor:**
+
 - **[Multi-motor bus]({{< relref "multi-motor" >}})** — sharing a bus, mirroring,
   spacing, group stops.
-- **[Testing without hardware]({{< relref "testing" >}})** — `MockTransport`.
+- **[Budgeting the wire]({{< relref "budgeting" >}})** — `bus_period`, `frame_time`,
+  `drive_floor`: will N wheels fit in your cycle?
+
+**And once it's yours to maintain:**
+
+- **[Testing without hardware]({{< relref "testing" >}})** — `MockTransport`, and the
+  hardware-in-the-loop tests when you do have a motor.
+
+For working code rather than snippets, see
+[Sample code]({{< relref "../samples" >}}) — `four_wheel_minimal.rs` is this
+whole guide in about fifty lines.
 
 > [!NOTE]
-> The snippets across these pages mirror `m0601/examples/usage_doc_check.rs`, which
+> The snippets across these pages mirror
+> [`m0601/examples/usage_doc_check.rs`]({{< relref "../samples/examples" >}}), which
 > the CI compiles — so what's shown here is known to build against the real API.

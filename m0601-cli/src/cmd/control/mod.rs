@@ -44,13 +44,19 @@ use m0601::{M0601, Mode};
 
 use state::Shared;
 
-/// Default velocity ramp for interactive driving (`--accel`). The motor's
-/// fastest ramp is `1`, but a keystroke here commands a large instantaneous
+/// Default velocity ramp for interactive driving (`--accel`).
+///
+/// Deliberately **not** the library's
+/// [`m0601::DEFAULT_DRIVE_ACCEL`](m0601::DEFAULT_DRIVE_ACCEL) (`1`), and named
+/// apart from it so the two never read as the same number: `drive velocity` and
+/// `drive_velocity` take the library default, `control` takes this one.
+///
+/// The motor's fastest ramp is `1`, but a keystroke here commands a large instantaneous
 /// step (a jump to the full preset, or an F→B reversal), so the default is
 /// deliberately gentler — in the same spirit as the bus's `SAFE_STOP_ACCEL`
 /// (5) — to keep the current spike under the 3 A bus-overcurrent trip on a
 /// loaded wheel. `0` selects the motor's own default ramp.
-pub const DEFAULT_DRIVE_ACCEL: u8 = 3;
+pub const CONTROL_DEFAULT_ACCEL: u8 = 3;
 
 /// Restores the terminal on drop (alt screen, raw mode, cursor). Created
 /// *after* raw mode is entered so an unwind always restores.

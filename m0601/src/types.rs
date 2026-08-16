@@ -232,10 +232,13 @@ pub struct Feedback {
     /// Whether byte 9 matches a CRC-8/MAXIM over bytes 0-8.
     ///
     /// Genuine replies carry that CRC (verified against real hardware —
-    /// see `PROTOCOL.md`), so this is normally `true`. It is still
-    /// **informational only**: telemetry is never rejected on it, since
-    /// not all reference implementations agree and firmware revisions may
-    /// differ.
+    /// see `PROTOCOL.md`), so this is normally `true`. **By default** it is
+    /// informational only — telemetry is not rejected on it, since not all
+    /// reference implementations agree and firmware revisions may differ.
+    /// Opt into rejection per bus or per handle with
+    /// [`Bus::with_strict_crc`](crate::Bus::with_strict_crc) /
+    /// [`M0601::with_strict_crc`](crate::M0601::with_strict_crc), which turn
+    /// a failing checksum into `Ok(None)`.
     pub crc_ok: bool,
     /// The raw 10-byte frame the telemetry was parsed from.
     pub raw: Frame,

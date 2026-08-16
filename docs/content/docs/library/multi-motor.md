@@ -1,6 +1,6 @@
 ---
 title: Multi-motor bus
-weight: 5
+weight: 6
 ---
 
 # Multi-motor robots
@@ -34,14 +34,30 @@ velocity and current *setpoints* on the way out and flips the *signs* of reporte
 speed and current on the way in, so your code speaks in robot-forward terms and both
 sides agree.
 
-Position values pass through untouched — the right mirror transform for an angle
-depends on your mechanical convention (is mirrored-90° equal to 270°, or still 90°?),
-so the driver won't guess. And `Feedback::raw` always holds the untouched wire bytes
-regardless, if you need the ground truth. (A small tell that someone sweated the
-details: a mirrored zero current comes back as `+0.0`, not the `-0.0` that would
-print as `-0.000 A`.)
+Position values pass through untouched **by default** — the right mirror transform for
+an angle depends on your mechanical convention (is mirrored-90° equal to 270°, or
+still 90°?), so the driver won't guess. It will do it on request, though:
 
-## Why back-to-back sends are safe here
+```rust
+use m0601::PositionMirror;
+
+let mut right = bus.motor(0x02)?
+    .mirrored(true)
+    .position_mirror(PositionMirror::Reflect);   // default is PassThrough
+```
+
+`PositionMirror::Reflect` reflects the reported angle about 0° — a reported `θ`
+becomes `(360 − θ) mod 360` — so a mirror-image wheel's angle counts up in the same
+direction its sign-flipped speed does. `PassThrough` (the default) leaves the wire
+angle alone. Pick the one that matches how your wheel is actually mounted;
+`position_mirror_mode()` reads the setting back. Note this affects *reported* angle
+only: `drive_position` setpoints are never mirrored either way.
+
+`Feedback::raw` always holds the untouched wire bytes regardless, if you need the
+ground truth. (A small tell that someone sweated the details: a mirrored zero current
+comes back as `+0.0`, not the `-0.0` that would print as `-0.000 A`.)
+
+## Frame spacing across handles
 
 The two `drive_velocity` calls above go out one after another with no explicit delay,
 and that's fine — but only because the bus inserts a gap for you. It has to. Every
@@ -57,7 +73,7 @@ set it from a turnaround you measured, not a guess, and set it once at open time
 since there's one gap per physical bus, not one per handle. [The bus]({{< relref
 "../concepts/the-bus" >}}) covers the reasoning and the multi-motor timing budget.
 
-## Group stops that don't yaw
+## Group stops
 
 When you stop a vehicle, stopping the wheels *one at a time* is a bug. On a skid-steer
 chassis, one braked wheel against three still-coasting ones is an uncommanded yaw —
@@ -78,8 +94,10 @@ everything from there.
 ## Budgeting the bus
 
 Each motor needs *its* drive frame at ≥50 Hz, so N motors put at least N×50 frames a
-second through one bus, plus the replies, plus the gaps. Four wheels at the default
-gap is roughly 10 ms of bus occupancy per 20 ms cycle before you read any telemetry.
+second through one bus, plus the replies, plus the gaps. Four wheels at the crate
+defaults is **~13.5 ms** of bus occupancy per 20 ms cycle before you read any
+telemetry. Don't re-derive that by hand; [`bus_period`]({{< relref "budgeting" >}})
+computes it, and the budgeting page holds the worked derivation.
 That's workable, but it means you should keep reply waits short (6 ms, like the CLI),
 read telemetry round-robin — one motor per cycle, not all four — and never *replace* a
 drive frame with a query, or that motor coasts through the hole. Don't run a full

@@ -14,7 +14,7 @@ Reach for `scan` first whenever the bus misbehaves: it's how you confirm a motor
 present, discover an address you've forgotten, or check that you don't have two
 motors fighting over one ID.
 
-## How it works, and why in two stages
+## The two-stage scan
 
 A default scan does two things. It sends one broadcast query that every motor
 answers at once, then it polls addresses `0x01` through `0x0F` individually. That
@@ -46,7 +46,14 @@ right before a `set-id`, run `--full`.
 |---|---|---|
 | `--full` | off | Poll every address `0x01..0xFE` (~40 s) instead of `0x01..0x0F`. |
 
-## What you'll see
+`scan` **ignores `--id`** — probing every address is the entire job, so there's
+nothing for a single address to select. ([`set-id`]({{< relref "set-id" >}}) ignores it
+too: it finds the motor's current address by scanning, precisely because you usually
+don't know it.) `--port` and
+`--timeout` still apply, and `--timeout` is what sets the per-probe wait (and so the
+scan's total runtime).
+
+## Output
 
 While a poll runs, a progress bar tracks it with an ETA derived from your timeout
 (`~ceil(count × timeout)` seconds):

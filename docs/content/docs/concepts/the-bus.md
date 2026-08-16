@@ -3,7 +3,7 @@ title: The bus
 weight: 2
 ---
 
-# The bus: half-duplex, and why frames need spacing
+# The bus
 
 RS485 is a two-wire, half-duplex, multi-drop bus. One differential pair (A/B) carries
 traffic in both directions but only one direction at a time, and any number of motors
@@ -50,7 +50,7 @@ has always used, and all of them live on the shared port the same way the gap do
 them individually (`with_min_gap`, `with_stop_accel`) or all at once from your own
 config with `Bus::with_timing(BusTiming { .. })`.
 
-## Addressing, and why collisions look like garbage
+## Addressing and collisions
 
 Motors ship at `0x01`, and you assign the rest one at a time with [`set-id`]({{<
 relref "../cli/set-id" >}}). Two protocol addresses are effectively off-limits:
@@ -65,11 +65,17 @@ each other and decode to bytes no single motor sent. That's not silence — it's
 nothing and `set-id` insists on polling all 254 addresses individually before it
 trusts that only one motor is present.
 
-## Budgeting more than a couple of motors
+## Bus budgeting
 
 Because each motor needs its own drive frame at ≥50 Hz, the bus load scales with motor
 count: N motors is at least N×50 frames per second, plus their replies, plus the gaps
-between everything. Four wheels at the default gap is roughly 10 ms of the 20 ms cycle
-gone before you read a byte of telemetry. It works, but it's why the multi-motor
-advice is specific: short reply waits, telemetry read round-robin rather than all at
-once, and never a scan running against a live drive loop on the same wire.
+between everything. Four wheels at the crate defaults is **~13.5 ms** of the 20 ms
+cycle gone before you read a byte of telemetry (the worked derivation is in
+[Budgeting the wire]({{< relref "../library/budgeting" >}})). It works, but it's why
+the multi-motor advice is
+specific: short reply waits, telemetry read round-robin rather than all at once, and
+never a scan running against a live drive loop on the same wire.
+
+You don't have to do that arithmetic by hand — `bus_period(n_drives, n_polls,
+min_gap, reply_wait)` is it, in code. See [Budgeting the wire]({{< relref
+"../library/budgeting" >}}).

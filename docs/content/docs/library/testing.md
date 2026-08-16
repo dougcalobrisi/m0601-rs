@@ -1,6 +1,6 @@
 ---
 title: Testing without hardware
-weight: 6
+weight: 8
 ---
 
 # Testing without hardware
@@ -52,3 +52,31 @@ failures you need to test but can't easily reproduce on demand:
 
 Because the mock's `pace` returns zero instead of really sleeping, these tests run
 instantly — a 50 Hz loop under test doesn't wait real milliseconds between frames.
+
+That free speed has one consequence worth knowing: **you cannot test timing with
+`MockTransport`.** If what you're asserting is the inter-frame gap itself, the mock
+will report zero elapsed no matter what the bus did. The crate's own `tests/spacing.rs`
+handles this with a small local transport that records `Instant`s and keeps
+`Transport`'s *default* `pace` (which really sleeps). Do the same if you need to prove
+spacing rather than sequence.
+
+## Running against real hardware
+
+The crate's hardware-in-the-loop tests live in `m0601/tests/hardware.rs` and are all
+`#[ignore]`d, so `cargo test` skips them and CI never needs a motor. To run them you
+opt in explicitly:
+
+```sh
+M0601_PORT=/dev/ttyUSB0 cargo test -p m0601 --test hardware -- --ignored --test-threads=1
+```
+
+| Variable | Meaning |
+|---|---|
+| `M0601_PORT` | **required** — the serial device to open |
+| `M0601_ID` | motor address, decimal or `0x` hex (default `1`) |
+| `M0601_ALLOW_MOTION` | set to `1` to enable `spin_and_stop`, the one test that turns the wheel |
+
+`--test-threads=1` is not optional: the serial port is exclusive, so parallel tests
+would fight over it. And `M0601_ALLOW_MOTION` is a separate gate from `--ignored` on
+purpose — running the read-only hardware tests should never be a decision that spins
+a wheel you forgot to clear.

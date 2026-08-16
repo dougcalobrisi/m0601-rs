@@ -42,7 +42,7 @@ pub fn run(mut motor: M0601, shared: Arc<Shared>, accel: u8) {
 fn active_frame(id: u8, cmd: &CmdState, accel: u8) -> Frame {
     match cmd.mode {
         Mode::Velocity if cmd.brake => frame_brake(id),
-        // `accel` is the operator-chosen ramp (default [`DEFAULT_DRIVE_ACCEL`],
+        // `accel` is the operator-chosen ramp (default [`CONTROL_DEFAULT_ACCEL`],
         // gentler than the motor's fastest `1`). A single keystroke here can
         // command a large instantaneous step — F is a jump to the full preset
         // from standstill, F→B is a ~2× swing — so a too-sharp ramp risks
@@ -135,7 +135,7 @@ fn poll_loop(motor: &mut M0601, shared: &Shared, accel: u8) {
 mod tests {
     use super::active_frame;
     use crate::cmd::CYCLE;
-    use crate::cmd::control::DEFAULT_DRIVE_ACCEL;
+    use crate::cmd::control::CONTROL_DEFAULT_ACCEL;
     use crate::cmd::control::state::CmdState;
     use m0601::Mode;
     use m0601::protocol::DRIVE_HZ_MIN;
@@ -263,14 +263,18 @@ mod tests {
         // Byte 6 is the ramp. It must carry the operator's chosen accel, not
         // a hardcoded value — a keystroke here commands a large instantaneous
         // step, so the ramp is what keeps the current spike under the trip.
-        let f = active_frame(0x01, &cmd(Mode::Velocity, 100, false), DEFAULT_DRIVE_ACCEL);
-        assert_eq!(f[6], DEFAULT_DRIVE_ACCEL);
+        let f = active_frame(
+            0x01,
+            &cmd(Mode::Velocity, 100, false),
+            CONTROL_DEFAULT_ACCEL,
+        );
+        assert_eq!(f[6], CONTROL_DEFAULT_ACCEL);
         assert_eq!(
             active_frame(0x01, &cmd(Mode::Velocity, 100, false), 7)[6],
             7
         );
         // The default is gentler than the motor's fastest ramp (1).
-        const _: () = assert!(DEFAULT_DRIVE_ACCEL > 1);
+        const _: () = assert!(CONTROL_DEFAULT_ACCEL > 1);
         // Non-velocity frames have no accel byte and ignore the parameter.
         assert_eq!(
             active_frame(0x01, &cmd(Mode::Current, 4096, false), 7),

@@ -52,9 +52,16 @@ manual run is a no-op until the variable is set.
 
 ### Cutting a release
 
-1. Run **Version Bump** with the new version → merge the PR it opens.
-2. Run **Release** with `dry_run: true` to validate.
-3. Run **Release** with `dry_run: false` to publish, tag, and create the
+1. Move the `## [Unreleased]` entries in [`CHANGELOG.md`](../CHANGELOG.md) under
+   the new version heading, and update the two link references at the bottom of
+   the file.
+2. Check the docs match the code you're shipping — in particular
+   `docs/content/docs/cli/` if any flag or behaviour changed. `cargo test
+   --workspace` catches drifted *API* snippets (via
+   `m0601/examples/usage_doc_check.rs`); it does not catch drifted prose.
+3. Run **Version Bump** with the new version → merge the PR it opens.
+4. Run **Release** with `dry_run: true` to validate.
+5. Run **Release** with `dry_run: false` to publish, tag, and create the
    GitHub Release.
 
 ## Manual publish (no workflow)

@@ -1,9 +1,9 @@
 ---
 title: First spin
-weight: 3
+weight: 20
 ---
 
-# Your first spin
+# First spin
 
 This is the motor-on-the-bench walkthrough: from bare wires to a spinning wheel and
 back to a controlled stop, with what you should see at each step and what to do when
@@ -14,7 +14,7 @@ you don't. It assumes you've built the CLI ([Getting started]({{< relref
 > A direct-drive hub motor has real torque (2 N·m stall) and no gearbox to slow it
 > down. Before anything spins: get the wheel off the ground or clear of fingers,
 > cables, and the edge of the bench. `Ctrl-C` brakes, but only while the process is
-> alive to do it.
+> alive to do it. → [Safety]({{< relref "safety" >}})
 
 ## 1. Wire it and power it
 

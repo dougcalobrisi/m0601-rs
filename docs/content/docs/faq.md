@@ -1,6 +1,6 @@
 ---
 title: FAQ & gotchas
-weight: 35
+weight: 90
 ---
 
 # FAQ & gotchas
@@ -9,7 +9,7 @@ The questions that come up once you're past "does it turn," most of them the kin
 only ask after something surprising happened. [Troubleshooting]({{< relref
 "troubleshooting" >}}) is the symptom-to-fix table; this is the why-does-it-do-that.
 
-## My wheel spins for a second and then stops on its own
+## Wheel spins briefly, then coasts {#spins-then-stops}
 
 Your control loop is running below 50 Hz. A drive command doesn't latch — the motor
 holds a setpoint only while frames keep arriving at least every 20 ms, and coasts
@@ -18,7 +18,7 @@ telemetry query on some cycles (that leaves a hole in the drive cadence). Read
 telemetry from the drive reply instead, and keep the loop at 20 ms.
 See [Polling and the fail-safe]({{< relref "concepts/polling-and-failsafe" >}}).
 
-## I sent zero to stop it and it moved / didn't brake
+## Zero setpoint moved or failed to brake {#zero-didnt-stop}
 
 Zero only means "stop" in velocity mode. In position mode a zero setpoint means
 "rotate to 0°," which can be most of a turn; in current mode it means zero torque — a
@@ -26,7 +26,7 @@ coast, not a brake. Use `safe_stop` (library) or the mode-aware `S` key (`contro
 both of which force velocity mode first. See [Stopping safely]({{< relref
 "concepts/stopping-safely" >}}).
 
-## Position mode is refused even though the wheel is stopped
+## Position mode refused at standstill {#position-refused}
 
 Switching into position mode is only legal below 10 RPM, and the check **fails
 closed**: if no telemetry has arrived, the speed is *unknown*, and unknown is treated
@@ -34,7 +34,7 @@ as "not confirmed slow," so the switch is refused. A wheel that's genuinely stop
 whose RX path is broken will hit this. Fix the reply direction of the wiring (it's
 often the same A/B swap that causes a silent bus) and the reading will come back.
 
-## `set-id` renamed all my motors at once
+## `set-id` renamed every motor {#set-id-renamed-all}
 
 The set-ID frame is unaddressed — every motor on the bus takes the new ID. If you run
 it with more than one motor connected, you get a bus full of duplicates that can only
@@ -46,45 +46,67 @@ get a mass rename is duplicate IDs colliding so the scan detects just a single
 motor. Renumber one motor at a time, physically. See
 [`set-id`]({{< relref "cli/set-id" >}}).
 
-## An empty `scan` — does that mean the bus is empty?
+## Empty `scan` results {#empty-scan}
 
 Only if it was a `--full` scan. A default scan polls `0x01..0x0F` after a broadcast,
-and the broadcast can collide into garbage when several motors answer at once. So a
-four-motor bus with everything above `0x0F` can scan as empty. When you need a
-definitive answer — before a `set-id`, say — run `scan --full`, which probes every
-address individually.
+so a bus with every motor above `0x0F` can scan as empty.
 
-## `kill -9` didn't stop the motor
+The CLI catches most of this itself: if the quick range comes back empty *and* the
+broadcast reply was garbled — motors answering together and colliding — it concludes
+motors are out there and escalates to a full `0x01..=0xFE` poll on its own, saying so.
+The empty result you're looking at is therefore the case that escaped: the collision
+read as *silence* rather than garbage, so there was nothing to escalate on.
+
+When you need a definitive answer — before a `set-id`, say — run `scan --full`, which
+probes every address individually. See [`scan`]({{< relref "cli/scan" >}}).
+
+## `kill -9` and coasting {#kill-9-coasts}
 
 Correct, and intended. `SIGKILL` and power loss run no code, so nothing brakes — the
 motor coasts, per the protocol fail-safe. Every *survivable* exit brakes (`Ctrl-C`,
 `SIGTERM`, `SIGHUP`, panics), but `kill -9` is not an emergency stop. If you need a
 guaranteed hard stop, cut motor power.
 
-## `raw` sent my frame but the CRC was wrong / it didn't brake after
+## `raw` CRC handling and refusals {#raw-by-design}
 
-Both are by design. `raw` recomputes the CRC only when you give it 9 bytes; pass a
-full 10 and it sends them verbatim, wrong checksum and all — that's how you test
-malformed frames. And `raw` has no safety funnel: it sends once and does not brake on
-exit, so a hand-crafted drive frame moves the wheel for one cycle with nothing to stop
-it afterward. Use `drive` or `control` for motion you want handled safely.
+Both are by design.
 
-## My driver keeps tripping a fault the instant it starts
+`raw` recomputes the CRC only when you give it **9** bytes; pass a full **10** and it
+sends them verbatim, wrong checksum and all — that's precisely how you test malformed
+frames.
+
+And it refuses the two command bytes that can move the wheel — `0x64` (drive) and
+`0xA0` (mode switch) — unless you pass `--yes`. With `--yes` it sends the frame and
+then brakes on exit (`safe_stop`), aimed at byte 0 of the frame you typed — the
+motor the frame actually commanded. The one gap is a broadcast `C8` drive frame: it
+commands every motor, a unicast brake covers only one (`--id`), and the output says
+so.
+
+What it still doesn't give you is the rest of `drive`'s rails: it sends **once** and
+does not loop, so motion isn't sustained, and there's no position-mode pre-flight
+check. Use [`drive`]({{< relref "cli/drive" >}}) or
+[`control`]({{< relref "cli/control" >}}) for motion you want handled safely.
+
+## Faults at drive start {#fault-on-start}
 
 Almost always the 3 A bus-overcurrent protection, tripped by too aggressive a ramp.
-`drive_velocity` (and the CLI default) uses acceleration `1`, the motor's *fastest*
-ramp; a big step at accel 1 on a loaded wheel spikes current past 3 A. Use
-`drive_velocity_accel` with a larger accel byte (gentler), or `drive --accel 40`. The
-protection auto-resets about five seconds after the condition clears.
+`drive_velocity` uses acceleration `1`, the motor's *fastest* ramp, and so does the
+CLI's `drive velocity`; a big step at accel 1 on a loaded wheel spikes current past
+3 A. (`control` is the exception — it defaults to `3`, deliberately gentler, because a
+single keystroke there commands a large instantaneous step.) Use
+`drive_velocity_accel` with a larger accel byte (gentler), or `drive velocity --accel 40`
+(`--accel` lives on the `velocity` subcommand, not on `drive` itself). The
+protection auto-resets about five seconds after the *trip*, so a wheel that is still
+loaded simply trips again.
 
-## Out-of-range values — clamped or rejected?
+## Out-of-range values: clamp vs. reject {#out-of-range}
 
 At the CLI boundary, **rejected**: `--rpm 5000` is refused up front, because a tool
 that drove 330 while printing 5000 would be lying. Inside the library's frame builders
 and the `control` target, values **clamp** to the valid range (and clamp symmetrically,
 so nothing wraps to the wrong sign). Different layers, different policy, on purpose.
 
-## Everything's intermittent — dropouts, garbage, flaky reads
+## Intermittent dropouts and garbage {#intermittent}
 
 Two usual causes. The brown wire is floating (it must be tied to ground — it's not
 optional), or you're missing 120 Ω termination on a cable run over about a metre. Both

@@ -1,6 +1,6 @@
 ---
 title: Internals
-weight: 45
+weight: 110
 ---
 
 # Internals
@@ -43,7 +43,7 @@ safe. For the same reason, the `Debug` impl uses `try_lock` and reports rather t
 blocks, so it can run from a panic path that already holds the lock without deadlocking
 the formatter.
 
-## The `control` TUI: two threads, careful teardown
+## The `control` TUI
 
 `control` splits cleanly. A **poll thread owns the serial port** and runs the 50 Hz
 loop; a **UI thread owns the terminal** and only ever edits a small shared state
@@ -64,7 +64,7 @@ panic in the loop body still runs the ~300 ms braked stop before propagating.
 The upshot is the guarantee the CLI docs promise: short of `SIGKILL` or power loss,
 there is no way to leave `control` with the wheel driven.
 
-## One `unsafe` block, well-fenced
+## The single `unsafe` block
 
 The crate is `#![deny(unsafe_code)]` — `deny`, not `forbid`, because there's exactly
 one exception and `forbid` couldn't be locally overridden. That exception is the pair
@@ -74,10 +74,11 @@ struct. It's kept behind a scoped `allow` with per-call SAFETY comments, so the
 crate-wide `deny` still covers everything else. Everything outside those two ioctls is
 unsafe-free.
 
-## How the docs stay honest
+## Doc compile checks
 
 The Rust snippets in this site and the doc comments aren't decoration — they're
-compiled. `m0601/examples/usage_doc_check.rs` is a real example the CI builds, and the
+compiled. [`m0601/examples/usage_doc_check.rs`]({{< relref "samples/examples" >}}) is a
+real example the CI builds, and the
 frame-level claims in `protocol.rs` are backed by doctests with exact expected bytes
 (and the `parse_feedback` double-decode is a deliberate regression guard against the
 two-layouts bug). If a documented signature drifts from the code, the build breaks.
@@ -87,14 +88,25 @@ API.
 ## Workspace layout
 
 ```
-m0601/        the library crate (what you depend on)
-  src/        lib, bus, protocol, types, transport, error, low_latency
-  examples/   usage_doc_check.rs — the compiled doc snippets
-  tests/      golden vectors, mock-bus behavior, spacing, hardware-in-loop
-m0601-cli/    the CLI crate (binary `m0601`)
+m0601/        the library crate (what you depend on)      [published]
+  src/        lib, bus, protocol, types, slew, transport, error, low_latency
+  examples/   four_wheel_minimal.rs — the driver on one screen
+              usage_doc_check.rs    — the compiled doc snippets
+  tests/      vectors.rs   golden protocol bytes
+              bus_mock.rs  driver behavior against MockTransport
+              spacing.rs   inter-frame gap timing
+              hardware.rs  hardware-in-the-loop (all #[ignore]d)
+m0601-cli/    the CLI crate (binary `m0601`)              [published]
   src/        main.rs + cmd/{scan,info,monitor,drive,set_id,raw,control/*}
+m0601-quad/   four-wheel skid-steer sample app            [publish = false]
+  src/        main.rs + config, rover, pilot, mix, safety, ui, logger, …
+  wheels.toml the sample wheel map
 docs/         this site (Hugo + hugo-book)
 ```
 
-The root `README.md`, `USAGE.md`, and `PROTOCOL.md` remain the in-repo quick
-references; this site is the expanded, browsable version of the same material.
+`m0601-quad` is not published: it's the reference implementation you clone and read,
+not a dependency. See [the sample app]({{< relref "samples/quad" >}}).
+
+This site is the canonical documentation. The root `README.md` is the project's
+landing page; `USAGE.md` and `PROTOCOL.md` are short pointers into these pages, kept
+so in-repo links don't dead-end.
