@@ -25,11 +25,11 @@ cargo publish -p m0601-cli   # after m0601 is live in the index
 before returning, so the sequential publish is safe. `m0601-quad` is skipped
 automatically via `publish = false`.
 
-## Workflows (currently disabled)
+## Workflows (armed)
 
-Two `workflow_dispatch`-only workflows automate this. **Both are disabled**:
-every job is gated on the repository variable `RELEASE_ENABLED == 'true'`, so a
-manual run is a no-op until the variable is set.
+Two `workflow_dispatch`-only workflows automate this. Every job is gated on the
+repository variable `RELEASE_ENABLED == 'true'`; with the variable unset a manual
+run is a no-op. It is now set, so both workflows are live.
 
 - **`.github/workflows/version-bump.yml`** — takes a version, bumps the
   workspace version + `Cargo.lock`, and opens a PR. Publishes nothing.
@@ -49,6 +49,35 @@ manual run is a no-op until the variable is set.
      against a crate that doesn't exist yet. Switch to OIDC-only afterward.
 3. Create a `crates` environment (Settings → Environments) for the OIDC
    `id-token` grant and optional approval gate.
+4. Allow Actions to open pull requests: Settings → Actions → General →
+   Workflow permissions → **Allow GitHub Actions to create and approve pull
+   requests**. Off by default. Without it `version-bump.yml` pushes its
+   branch and then fails at `gh pr create` with *"GitHub Actions is not
+   permitted to create or approve pull requests"*, leaving a stale
+   `chore/bump-version-*` branch behind. `release.yml` does not need this.
+
+**Current state of this repo:** `RELEASE_ENABLED = true`, the `crates`
+environment exists, and Actions may open PRs. Trusted Publishing is **not**
+configured yet — see the first-release note below.
+
+### The first release is different
+
+Trusted Publishing cannot be configured for a crate name that does not exist
+yet, so the OIDC path in `release.yml` cannot claim `m0601` or `m0601-cli`.
+The first publish is therefore a manual one, from a machine with a crates.io
+token:
+
+```sh
+cargo login                    # paste a token from crates.io/settings/tokens
+cargo publish -p m0601         # library first
+cargo publish -p m0601-cli     # resolves m0601 from the index
+git tag -a v0.1.0 -m "Release v0.1.0" && git push origin v0.1.0
+gh release create v0.1.0 --generate-notes
+```
+
+Then configure Trusted Publishing for both crates (crate settings → Trusted
+Publishing → this repo, `release.yml`, environment `crates`) and every release
+from 0.2.0 on goes through the workflow below with no token anywhere.
 
 ### Cutting a release
 
