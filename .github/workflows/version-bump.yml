@@ -1,5 +1,9 @@
 name: Version Bump
 
+# Manual-dispatch workflows are only listed once GitHub has indexed the
+# file on the default branch; if `gh workflow run` 404s, push a change to
+# this file to force a re-index.
+
 # DISABLED BY DEFAULT — manual dispatch only, and gated on the repository
 # variable RELEASE_ENABLED == 'true' (same switch as release.yml). Until that
 # variable is set, a manual run is a no-op. This opens a PR that bumps the

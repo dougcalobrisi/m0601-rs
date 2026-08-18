@@ -1,5 +1,9 @@
 name: Docs site
 
+# Manual-dispatch workflows are only listed once GitHub has indexed the
+# file on the default branch; if `gh workflow run` 404s, push a change to
+# this file to force a re-index.
+
 # Manual dispatch only. The site is published on demand, not on every push:
 # doc content lands continuously, but a live-site rebuild is a deliberate act.
 on:

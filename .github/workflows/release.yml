@@ -1,5 +1,9 @@
 name: Release
 
+# Manual-dispatch workflows are only listed once GitHub has indexed the
+# file on the default branch; if `gh workflow run` 404s, push a change to
+# this file to force a re-index.
+
 # DISABLED BY DEFAULT. This workflow only runs on manual dispatch, and even
 # then it is gated on the repository variable RELEASE_ENABLED == 'true'. The
 # `if:` guard lives on the `preflight` job alone; every other job inherits the
