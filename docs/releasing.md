@@ -77,7 +77,13 @@ gh release create v0.1.0 --generate-notes
 
 Then configure Trusted Publishing for both crates (crate settings → Trusted
 Publishing → this repo, `release.yml`, environment `crates`) and every release
-from 0.2.0 on goes through the workflow below with no token anywhere.
+after that goes through the workflow below with no token anywhere. **Done for
+`m0601` and `m0601-cli` as of 0.1.0.**
+
+A dry run mints an OIDC token but publishes nothing, so `dry_run: true` checks
+the Trusted Publishing wiring as well as the packaging. If the crates.io side
+is misconfigured, the dry run fails at the *Authenticate* step rather than
+letting you find out mid-publish.
 
 ### Cutting a release
 
@@ -89,7 +95,8 @@ from 0.2.0 on goes through the workflow below with no token anywhere.
    --workspace` catches drifted *API* snippets (via
    `m0601/examples/usage_doc_check.rs`); it does not catch drifted prose.
 3. Run **Version Bump** with the new version → merge the PR it opens.
-4. Run **Release** with `dry_run: true` to validate.
+4. Run **Release** with `dry_run: true` to validate — this exercises the CI
+   gate, the version check, the Trusted Publishing handshake, and packaging.
 5. Run **Release** with `dry_run: false` to publish, tag, and create the
    GitHub Release.
 
