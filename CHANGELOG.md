@@ -9,7 +9,93 @@ lockstep; `m0601-quad` is a sample and is not published.
 
 ## [Unreleased]
 
-### Changed
+Nothing yet.
+
+## [0.1.0] — 2026-08-18
+
+Initial public release.
+
+### Added
+
+- **`m0601`** — the driver library. Fixed 10-byte frame protocol at 115200 8N1 over
+  half-duplex RS485, with:
+  - `M0601` per-motor handles: `query`, `transact`, `set_mode`, `drive_velocity`,
+    `drive_current`, `drive_position`, `brake`, and an infallible `safe_stop`.
+  - `Bus`, which owns the port and mints cheap cloneable handles, enforces the
+    inter-frame idle gap, and runs round-major group operations (`safe_stop_all`,
+    `set_mode_all`) so a vehicle stops without yawing.
+  - Left/right mirroring (`mirrored`, `PositionMirror`), so `+rpm` means "forward" on
+    both sides of a chassis.
+  - A pure, I/O-free `protocol` module: frame builders, both reply-layout parsers,
+    CRC-8/MAXIM, and the scaling helpers.
+  - `Telemetry` and `PositionAccumulator` for reconciling the two reply layouts and
+    unwrapping a single-turn angle.
+  - `BusTiming` for every pacing and stop tunable, plus `bus_period` / `frame_time` /
+    `drive_floor` for sizing a multi-motor loop.
+  - A `Transport` seam with `SerialTransport` and a public `MockTransport`, so driver
+    logic is testable with no hardware.
+  - Automatic `ASYNC_LOW_LATENCY` on Linux, defeating the FTDI 16 ms latency timer.
+  - `#![deny(unsafe_code)]` with a single well-fenced exception, and workspace-wide
+    `unwrap`/`expect`/`panic` denials — a panic in a 50 Hz drive loop is an
+    uncontrolled motor.
+- **`m0601-cli`** — the `m0601` binary: `scan`, `info`, `monitor`, `control`, `drive`,
+  `set-id`, `raw`. Every motion path brakes on the way out — `drive` and `control`
+  through a `Drop`-based stop guard, `raw --yes` through an explicit exit brake — so
+  short of `SIGKILL`, power loss, or a signal landing after the handler failed to
+  install (which the tools warn about at startup), an exit leaves the wheel braked.
+- **`m0601-quad`** — a four-wheel skid-steer sample app and the reference
+  implementation for multi-motor use (`publish = false`).
+- The documentation site under `docs/`.
+
+- Documentation for the examples and the `m0601-quad` sample app, plus library pages
+  for wire budgeting (`bus_period`) and odometry (`PositionAccumulator`).
+- Unit tests for `raw`'s exit-brake path: the post-parse logic now runs over any
+  `Transport`, so a `MockTransport` verifies the brake chases the addressed motor,
+  falls back to `--id` on broadcast, skips non-motion frames, and still fires when
+  the exchange itself errors.
+
+### Security / safety hardening
+
+Pre-release hardening from a review of `m0601-cli`. The safety architecture — the
+stop-guard funnel, fail-closed deadlines, the fail-closed position guard, and the
+panic-free lint discipline — held up; these address what the review did surface.
+
+- `control` no longer hardcodes the motor's *fastest* velocity ramp. A single
+  keystroke commands a large instantaneous step (a jump to the full preset, or an
+  `F`→`B` reversal), which at accel `1` can spike current past the 3 A
+  bus-overcurrent trip on a loaded wheel. Driving now uses a gentler default of `3`,
+  exposed as `control --accel`.
+- Quitting `control` no longer lurches in position mode. `quit()` used to zero the
+  target, which in position mode means "drive to 0°" — a spurious move for the one
+  frame before the loop observed `running == false`.
+- `--timeout` gained a `0.005 s` floor. It doubles as the serial reply window, and
+  `--timeout 0` left ~0.9 ms, turning every read into a false "no response".
+- `raw` gates the two motion command bytes (`0x64` drive, `0xA0` mode switch) behind
+  `--yes`, and brakes the motor the frame addressed (byte 0) on exit when it sends
+  one — even when the exchange errors mid-flight — falling back to `--id` for
+  broadcast frames, where the output says only one motor was braked.
+- An opt-in hold-to-run (momentary-keys) mode for `control` was considered and
+  deferred; the latching behavior is documented prominently instead.
+- `--id` is validated to `0x01..=0xFE` at the argument boundary.
+- `drive` gives up after ~1 s of consecutive hard transact errors (braking via the
+  stop guard) instead of spinning forever printing "still driving" when the adapter
+  has been unplugged.
+- Signal-handler-failure warnings now say plainly that *any* signal — `Ctrl-C`
+  included — coasts rather than brakes when the handler could not be installed.
+
+### Changed (CLI ergonomics)
+
+- Diagnostics moved from stdout to stderr across `info`, `scan`, `set-id`, `raw`, and
+  `drive`, so `m0601 info > log.txt` captures only readout data.
+- `monitor --hz` is honest: polling uses a short bounded reply wait rather than
+  collapsing to ~`1/--timeout` on a slow or silent motor.
+- `set-id` shows a progress bar during its ~40 s exhaustive pre-write scan instead of
+  freezing silently.
+- `control` no longer flickers: each frame is a synchronized update, and identical
+  frames are not repainted.
+
+
+### Changed (documentation and `raw`)
 
 - The Hugo site under `docs/content/` is now the canonical documentation. `USAGE.md`
   and `PROTOCOL.md` are pointers into it rather than parallel copies, which is what
@@ -19,7 +105,24 @@ lockstep; `m0601-quad` is a sample and is not published.
   and reserved addresses — and the brake is attempted (best-effort) even when the
   exchange itself errors, since the frame may already be on the wire.
 
-### Fixed
+### Packaging and attribution
+
+- `NOTICE` records every source the protocol reference draws on, with each one's
+  licence: the DFRobot wiki, the MIT-licensed DDT vendor sample, and two projects
+  that state no licence. It also states that no third-party code is vendored here,
+  and why the known-answer test frames are reproducible facts about the wire —
+  each byte is fixed by the frame layout and CRC-8/MAXIM — rather than borrowed
+  expression. The README and `tests/vectors.rs` now say *cross-checked against*
+  instead of *taken verbatim from*.
+- `LICENSE` and `NOTICE` ship inside both published crates. `license = "MIT"` is
+  only an SPDX label and neither `include` nor `readme` can reach outside a package
+  directory, so each crate keeps its own copy, guarded by a CI job that fails if a
+  copy drifts from the workspace root.
+- `m0601-quad`'s `wheels.toml` defaults to `/dev/ttyUSB0`, matching every other
+  example in the tree, and labels its timing block as measured on one rig rather
+  than as protocol-derived values to copy verbatim.
+
+### Fixed before release
 
 - Documentation resynced with the CLI hardening below — most importantly `raw`, whose
   page still described the pre-hardening behaviour of having no stop guard at all.
@@ -70,90 +173,6 @@ lockstep; `m0601-quad` is a sample and is not published.
   `content/` — is gone, and the cookbook entry no longer sits in the gutted
   `USAGE.md`, where no reader is sent any more.
 
-### Added
-
-- Documentation for the examples and the `m0601-quad` sample app, plus library pages
-  for wire budgeting (`bus_period`) and odometry (`PositionAccumulator`).
-- Unit tests for `raw`'s exit-brake path: the post-parse logic now runs over any
-  `Transport`, so a `MockTransport` verifies the brake chases the addressed motor,
-  falls back to `--id` on broadcast, skips non-motion frames, and still fires when
-  the exchange itself errors.
-
-## [0.1.0] — unreleased
-
-Initial public release.
-
-### Added
-
-- **`m0601`** — the driver library. Fixed 10-byte frame protocol at 115200 8N1 over
-  half-duplex RS485, with:
-  - `M0601` per-motor handles: `query`, `transact`, `set_mode`, `drive_velocity`,
-    `drive_current`, `drive_position`, `brake`, and an infallible `safe_stop`.
-  - `Bus`, which owns the port and mints cheap cloneable handles, enforces the
-    inter-frame idle gap, and runs round-major group operations (`safe_stop_all`,
-    `set_mode_all`) so a vehicle stops without yawing.
-  - Left/right mirroring (`mirrored`, `PositionMirror`), so `+rpm` means "forward" on
-    both sides of a chassis.
-  - A pure, I/O-free `protocol` module: frame builders, both reply-layout parsers,
-    CRC-8/MAXIM, and the scaling helpers.
-  - `Telemetry` and `PositionAccumulator` for reconciling the two reply layouts and
-    unwrapping a single-turn angle.
-  - `BusTiming` for every pacing and stop tunable, plus `bus_period` / `frame_time` /
-    `drive_floor` for sizing a multi-motor loop.
-  - A `Transport` seam with `SerialTransport` and a public `MockTransport`, so driver
-    logic is testable with no hardware.
-  - Automatic `ASYNC_LOW_LATENCY` on Linux, defeating the FTDI 16 ms latency timer.
-  - `#![deny(unsafe_code)]` with a single well-fenced exception, and workspace-wide
-    `unwrap`/`expect`/`panic` denials — a panic in a 50 Hz drive loop is an
-    uncontrolled motor.
-- **`m0601-cli`** — the `m0601` binary: `scan`, `info`, `monitor`, `control`, `drive`,
-  `set-id`, `raw`. Every motion path brakes on the way out — `drive` and `control`
-  through a `Drop`-based stop guard, `raw --yes` through an explicit exit brake — so
-  short of `SIGKILL`, power loss, or a signal landing after the handler failed to
-  install (which the tools warn about at startup), an exit leaves the wheel braked.
-- **`m0601-quad`** — a four-wheel skid-steer sample app and the reference
-  implementation for multi-motor use (`publish = false`).
-- The documentation site under `docs/`.
-
-### Security / safety hardening
-
-Pre-release hardening from a review of `m0601-cli`. The safety architecture — the
-stop-guard funnel, fail-closed deadlines, the fail-closed position guard, and the
-panic-free lint discipline — held up; these address what the review did surface.
-
-- `control` no longer hardcodes the motor's *fastest* velocity ramp. A single
-  keystroke commands a large instantaneous step (a jump to the full preset, or an
-  `F`→`B` reversal), which at accel `1` can spike current past the 3 A
-  bus-overcurrent trip on a loaded wheel. Driving now uses a gentler default of `3`,
-  exposed as `control --accel`.
-- Quitting `control` no longer lurches in position mode. `quit()` used to zero the
-  target, which in position mode means "drive to 0°" — a spurious move for the one
-  frame before the loop observed `running == false`.
-- `--timeout` gained a `0.005 s` floor. It doubles as the serial reply window, and
-  `--timeout 0` left ~0.9 ms, turning every read into a false "no response".
-- `raw` gates the two motion command bytes (`0x64` drive, `0xA0` mode switch) behind
-  `--yes`, and brakes the motor the frame addressed (byte 0) on exit when it sends
-  one — even when the exchange errors mid-flight — falling back to `--id` for
-  broadcast frames, where the output says only one motor was braked.
-- An opt-in hold-to-run (momentary-keys) mode for `control` was considered and
-  deferred; the latching behavior is documented prominently instead.
-- `--id` is validated to `0x01..=0xFE` at the argument boundary.
-- `drive` gives up after ~1 s of consecutive hard transact errors (braking via the
-  stop guard) instead of spinning forever printing "still driving" when the adapter
-  has been unplugged.
-- Signal-handler-failure warnings now say plainly that *any* signal — `Ctrl-C`
-  included — coasts rather than brakes when the handler could not be installed.
-
-### Changed (CLI ergonomics)
-
-- Diagnostics moved from stdout to stderr across `info`, `scan`, `set-id`, `raw`, and
-  `drive`, so `m0601 info > log.txt` captures only readout data.
-- `monitor --hz` is honest: polling uses a short bounded reply wait rather than
-  collapsing to ~`1/--timeout` on a slow or silent motor.
-- `set-id` shows a progress bar during its ~40 s exhaustive pre-write scan instead of
-  freezing silently.
-- `control` no longer flickers: each frame is a synchronized update, and identical
-  frames are not repainted.
 
 [Unreleased]: https://github.com/dougcalobrisi/m0601-rs/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/dougcalobrisi/m0601-rs/releases/tag/v0.1.0

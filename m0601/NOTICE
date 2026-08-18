@@ -1,0 +1,52 @@
+NOTICE
+======
+
+m0601-rs is licensed under the MIT License; see LICENSE.
+
+This project contains no third-party source code. It is an independent
+implementation of the DFRobot M0601 (Direct Drive Tech M0601C-111) RS485
+protocol, written against public documentation and verified against the
+author's own hardware captures.
+
+Reference sources
+-----------------
+
+The protocol reference (docs/content/docs/protocol.md) records, per claim,
+which of the following sources supports it and how any disagreement between
+them was settled. These sources informed the documentation and were used to
+cross-check test vectors; no code from them was copied into this project.
+
+1. DFRobot FIT1042 protocol wiki
+   https://wiki.dfrobot.com/fit1042/docs/23322
+   Vendor documentation. Published as images; no PDF datasheet exists.
+
+2. DDT M0601C-111 vendor sample code — tech-life-hacking/DDT_M0601C_111
+   https://github.com/tech-life-hacking/DDT_M0601C_111
+   License: MIT.
+
+3. navigation_robot — Il1yasviel/navigation_robot
+   https://github.com/Il1yasviel/navigation_robot
+   License: none stated (all rights reserved).
+
+4. MotorLink — MukeshSankhla/MotorLink
+   https://github.com/MukeshSankhla/MotorLink
+   License: none stated (all rights reserved).
+
+On the known-answer test vectors
+--------------------------------
+
+m0601/tests/vectors.rs contains frames that also appear in sources 3 and 4.
+Those two projects state no license, so nothing from them is reproduced here
+as expression. The frames themselves are not expression: each byte is fully
+determined by the protocol's frame layout (ID, command, big-endian payload,
+padding) and by CRC-8/MAXIM, whose published check value — crc8("123456789")
+== 0xA1 — anchors the implementation independently. Any correct implementation
+of this protocol necessarily emits the identical bytes. They are recorded here
+as a cross-check that this crate agrees with implementations known to have
+driven real hardware.
+
+Trademarks
+----------
+
+DFRobot and Direct Drive Tech are trademarks of their respective owners. This
+project is not affiliated with, endorsed by, or sponsored by either company.

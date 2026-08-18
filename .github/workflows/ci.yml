@@ -79,3 +79,30 @@ jobs:
       - run: cargo doc --no-deps -p m0601
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # The published tarballs must carry the licence and attribution texts.
+  # `license = "MIT"` is only an SPDX label, and `include`/`readme` cannot
+  # reach outside a package directory, so each publishable crate keeps its
+  # own copy. Copies drift silently, hence this guard.
+  license-files:
+    name: license files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Per-crate LICENSE/NOTICE match the workspace root
+        run: |
+          set -euo pipefail
+          status=0
+          for crate in m0601 m0601-cli; do
+            for file in LICENSE NOTICE; do
+              if [ ! -f "$crate/$file" ]; then
+                echo "::error file=$crate/$file::missing; copy it from the workspace root or it will not ship in the crate tarball"
+                status=1
+              elif ! cmp -s "$file" "$crate/$file"; then
+                echo "::error file=$crate/$file::differs from the root $file; re-copy it"
+                status=1
+              fi
+            done
+          done
+          exit $status
