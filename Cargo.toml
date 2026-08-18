@@ -3,7 +3,7 @@ resolver = "3"
 members = ["m0601", "m0601-cli", "m0601-quad"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # Let-chains (`if let ... && let ...`) are used in the CLI's drive and poll
 # loops; those are stable from 1.88, which is above edition 2024's own 1.85.
@@ -16,7 +16,7 @@ repository = "https://github.com/dougcalobrisi/m0601-rs"
 # and records `m0601 = "0.1.0"` so m0601-cli resolves the library from
 # crates.io. The `path` still wins for local workspace builds. Keep the
 # version in lockstep with workspace.package.version above.
-m0601 = { path = "m0601", version = "0.1.0" }
+m0601 = { path = "m0601", version = "0.2.0" }
 serialport = { version = "4", default-features = false }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
