@@ -130,12 +130,18 @@ fn frame(id: u8, cmd: u8, data: [u8; 7]) -> Frame {
 
 /// Velocity drive frame. `rpm` is clamped to [`RPM_MIN`]`..=`[`RPM_MAX`].
 ///
-/// `accel` sets how steeply the motor ramps toward the setpoint: `1` is the
-/// *fastest* ramp, larger values ramp more gently, and `0` selects the
-/// motor's own default. Only that direction is documented here — the vendor
-/// sources state a unit for this byte ("1 RPM per 0.1 ms") whose sense
-/// contradicts the ramp direction every source agrees on, and it has not
-/// been resolved against hardware. See `PROTOCOL.md`.
+/// `accel` sets how hard the motor ramps toward the setpoint, and `0` selects
+/// the motor's own default.
+///
+/// **Which end of the range is gentle is unknown.** No vendor source states
+/// the direction. The upstream DDT manual says only "Acceleration: Valid in
+/// velocity loop. unity: RPM/0.1ms. When set to 0, it would be the default
+/// value" — a *rate*, under which a larger byte would ramp *harder*. The
+/// DFRobot wiki repeats that unit, then contradicts it with a worked example
+/// reading the byte as time-per-rpm, and adds that the default equals `1`.
+/// Nothing here has been measured against hardware. Treat the byte as an
+/// empirical knob: sweep it on your own wheel and watch time-to-setpoint.
+/// See `PROTOCOL.md`.
 ///
 /// Only sustains motion while resent at ≥[`DRIVE_HZ_MIN`] Hz.
 ///

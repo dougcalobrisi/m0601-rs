@@ -8,9 +8,11 @@
 //! how fast the **host** may move the setpoint itself. A keystroke, a joystick
 //! snap, or a mixer output that jumps from one cycle to the next is a step
 //! change on the wire, and a large step on a loaded wheel can spike current
-//! into the motor's 3 A bus-overcurrent protection — the same failure the
-//! [`stop_accel`](crate::BusTiming) default of `5` exists to avoid on the way
-//! down.
+//! into the motor's 3 A bus-overcurrent protection. That is also the failure
+//! the frame's `accel` byte is supposed to shape, but its direction is
+//! undocumented (see [`frame_velocity`](crate::protocol::frame_velocity)), so
+//! bounding the step here is the mitigation that does not depend on guessing
+//! a vendor byte.
 //!
 //! That makes the rate of change of a setpoint a property of *this motor*, not
 //! of any particular robot, so it lives here. What stays with the application

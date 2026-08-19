@@ -43,11 +43,17 @@ rounding.
 Either way the motor brakes on exit, so back-to-back scripted runs have no coasting
 gap between them.
 
-**`--accel` (velocity only) is a footgun worth respecting.** `1` is the motor's
-*fastest* ramp and the default; larger is gentler; `0` is the motor's own default.
-A big velocity step at accel 1 on a loaded wheel can spike current into the 3 A
-protection and trip it. If a run keeps faulting out the instant it starts, soften
-the ramp.
+**`--accel` (velocity only) is a footgun worth respecting**, and not the way it
+looks. The default is `1`, which is what the DFRobot wiki says the motor's own default
+equals; `0` asks for that default explicitly. But **which end of the range is the
+gentle one is undocumented** — the upstream manual gives only a rate unit, under which
+a *larger* value ramps *harder*
+([details]({{< relref "../protocol" >}}#known-contradictions-between-sources)).
+
+A big velocity step on a loaded wheel can spike current into the 3 A protection and
+trip it. If a run keeps faulting out the instant it starts, command a smaller `--rpm`
+first — that helps in either direction — and sweep `--accel` while watching
+time-to-setpoint if you want to learn the byte's real sense on your hardware.
 
 ## Position-mode pre-flight check
 

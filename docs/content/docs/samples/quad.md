@@ -85,7 +85,7 @@ reply_wait_ms = 2.0    # per-poll reply window; measure it, don't guess
 
 [limits]
 max_rpm         = 120    # 100% throttle commands exactly this
-accel           = 5      # NEVER 1 on a vehicle — see below
+accel           = 0      # the motor's own default ramp — see below
 ramp_rpm_per_s  = 300.0  # host-side setpoint ramp; all-stop BYPASSES it
 current_trip_a  = 2.5    # monitor trip, not a command clamp
 current_trip_ms = 400.0  # debounce — start-up inrush is normal and shorter
@@ -106,8 +106,14 @@ mirrored = false    # the SKU's mechanical build (FIT1042 left / FIT1038 right)
 
 Three of those values carry the lessons this repo learned the hard way:
 
-- **`accel = 5`, never `1`.** `1` is the motor's *fastest* ramp, and four wheels
-  launching off one supply at that ramp can trip the 3 A bus-overcurrent protection.
+- **`accel = 0`, the motor's own ramp.** Four wheels launching off one supply can trip
+  the 3 A bus-overcurrent protection, and the frame's accel byte is the obvious lever —
+  but **no vendor source states which end of its range is gentle**
+  ([details]({{< relref "../protocol" >}}#known-contradictions-between-sources)). This
+  shipped as `5` on the assumption that larger is gentler, which the upstream manual's
+  rate unit contradicts, so it now defers to the motor and `check` warns on any nonzero
+  value. `ramp_rpm_per_s` below is the host-side ramp that actually bounds a launch,
+  and it works regardless of direction.
 - **`cycle_ms = 18`, not 20.** Every wheel needs its drive frame at ≥50 Hz, so the
   cycle must stay *under* 20 ms; 18 leaves 2 ms of margin. A poll cycle consumes
   ~17.2 ms of that, which is why `check` says so out loud:

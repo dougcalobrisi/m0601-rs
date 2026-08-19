@@ -55,17 +55,24 @@ stopped arriving. Worst case, the fail-safe still catches it.
 
 ## Acceleration
 
-`drive_velocity` uses acceleration `1` by default — which is the motor's *fastest*
-ramp, not a gentle one. On a loaded wheel a large velocity step at accel 1 can draw a
-current spike big enough to trip the 3 A bus-overcurrent protection, which drops the
-wheel until it auto-resets ~5 s later. If you see that, ramp softer. Per call:
+`drive_velocity` uses acceleration `1` by default — the value the DFRobot wiki says the
+motor's own default equals. On a loaded wheel a large velocity step can draw a current
+spike big enough to trip the 3 A bus-overcurrent protection, which drops the wheel until
+it auto-resets ~5 s later.
+
+The accel byte is the obvious lever on that, but **its direction is undocumented and
+unmeasured** — the upstream manual's only statement about the field is a rate unit,
+under which a *larger* value ramps *harder*
+([details]({{< relref "../protocol" >}}#known-contradictions-between-sources)). The
+reliable fix is a smaller step: ramp the setpoint host-side with
+[`SlewLimiter`]({{< relref "../concepts/setpoint-shaping" >}}). If you do want to sweep
+the byte, per call:
 
 ```rust
-motor.drive_velocity_accel(200, 40)?;   // larger accel byte = gentler ramp; 0 = motor default
+motor.drive_velocity_accel(200, 40)?;   // 0 = motor default; direction unverified
 ```
 
-Or change the default `drive_velocity` uses, once, so ordinary calls ramp gently — on
-the whole bus or one handle:
+Or change the default `drive_velocity` uses, once — on the whole bus or one handle:
 
 ```rust
 let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_default_accel(10); // every motor

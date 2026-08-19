@@ -34,11 +34,15 @@ reply_wait_ms = 2.0 # per-poll reply window. Short on purpose: on a poll
 
 [limits]
 max_rpm = 120          # 100% throttle commands exactly this (wheel max 330)
-accel = 5              # NEVER 1 on a vehicle: a big step at accel 1 can trip
-                       # the motor's 3 A bus-overcurrent on a loaded wheel,
-                       # and four wheels launch off one supply. 5 is
-                       # empirical — the vendor sources contradict each other
-                       # on this byte's unit; raise it if launches still trip.
+accel = 0              # the motor's OWN default ramp, not a number of ours.
+                       # A big step on a loaded wheel can trip the 3 A
+                       # bus-overcurrent, and four wheels launch off one
+                       # supply — but no vendor source states which end of
+                       # this byte's range is the gentle one, and the
+                       # upstream manual's only statement about it is a rate
+                       # unit under which LARGER ramps HARDER. This was 5,
+                       # picked on the opposite assumption. Sweep it on this
+                       # rig and measure before setting it nonzero.
 ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
                        # ramp. All-stop and fault stops BYPASS it.
 current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp

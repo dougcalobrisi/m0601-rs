@@ -68,16 +68,21 @@ one-line readout while it runs and `Stopped and braked after 3.0 s.` at the end.
 Because every exit path brakes — timer, `Ctrl-C`, even a panic — there's no way to
 leave this command with the wheel coasting unless the whole process is killed.
 
-Try reverse and a gentler ramp:
+Try reverse, and a different ramp:
 
 ```sh
 m0601 drive velocity --rpm -80 --secs 3         # the other way
-m0601 drive velocity --rpm 200 --accel 40        # softer acceleration
+m0601 drive velocity --rpm 200 --accel 40        # a different ramp — see below
 ```
 
-That `--accel 40` matters more than it looks: acceleration `1` (the default) is the
-motor's *fastest* ramp, and a big step at accel 1 on a loaded wheel can spike
-current hard enough to trip the 3 A protection. Larger numbers ramp gentler.
+That `--accel 40` matters more than it looks — but not in the direction you might
+expect. A big step on a loaded wheel can spike current hard enough to trip the 3 A
+protection, and this byte shapes that ramp. **Which way it shapes it is undocumented**:
+no vendor source states the direction, and the upstream manual's only statement about
+the field is a rate unit under which a larger value ramps *harder*
+([why]({{< relref "protocol" >}}#known-contradictions-between-sources)). `0` asks the
+motor for its own default. Treat `--accel` as a knob to sweep and measure on your own
+wheel, and use a smaller RPM step if you just want a gentler launch.
 
 ## 5. Take the wheel
 

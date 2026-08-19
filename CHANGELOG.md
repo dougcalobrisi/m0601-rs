@@ -9,7 +9,31 @@ lockstep; `m0601-quad` is a sample and is not published.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The acceleration byte's ramp direction is no longer claimed anywhere.** The docs
+  stated that "every source, the wiki included," says `1` is the fastest ramp and
+  larger values are gentler. No source says that. The upstream DDT manual's only
+  statement about the field is a unit — `RPM/0.1ms`, a *rate*, under which a larger
+  byte ramps *harder* — and the DFRobot wiki contradicts that unit within the same
+  sentence. Nothing has been measured against hardware. Every doc comment, CLI help
+  string and docs-site page that asserted a direction now says it is unresolved, and
+  `docs/content/docs/protocol.md` records what each source actually says
+  ([#2](https://github.com/dougcalobrisi/m0601-rs/issues/2)).
+- **Defaults that encoded the unverified direction are now `0`** — the motor's own
+  default ramp — rather than a guess that may be backwards:
+  `BusTiming::stop_accel` (was `5`), the `control` CLI's `--accel` (was `3`), and
+  `m0601-quad`'s shipped `limits.accel` (was `5`). `m0601-quad` now warns on any
+  nonzero `limits.accel` instead of only on `1`. `DEFAULT_DRIVE_ACCEL` stays `1`,
+  which asserts nothing about direction: the wiki states the motor's default *is* `1`.
+
+  Anyone relying on the old stop ramp can restore it with
+  `Bus::with_stop_accel(5)` / `BusTiming { stop_accel: 5, .. }`.
+
+  The direction-independent way to keep a launch or a stop under the 3 A
+  bus-overcurrent trip is to bound the *step*, with `SlewLimiter` — not to pick a
+  value for this byte. Settling the direction needs a hardware sweep; see
+  [#2](https://github.com/dougcalobrisi/m0601-rs/issues/2).
 
 ## [0.1.0] — 2026-08-18
 

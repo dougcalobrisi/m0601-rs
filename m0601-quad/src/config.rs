@@ -304,12 +304,16 @@ impl Config {
                 m0601::protocol::RPM_MAX
             ));
         }
-        if self.limits.accel == 1 {
-            r.warnings.push(
-                "limits.accel = 1 is the motor's FASTEST ramp; a loaded launch can trip \
-                 the 3 A bus-overcurrent protection. Use 5 unless measured otherwise"
-                    .into(),
-            );
+        if self.limits.accel != 0 {
+            r.warnings.push(format!(
+                "limits.accel = {} is a guess: no vendor source states which end of \
+                 this byte's range is the gentle one, and the upstream manual's only \
+                 statement about it is a rate unit under which a LARGER value ramps \
+                 HARDER. A loaded launch on four wheels off one supply can trip the \
+                 3 A bus-overcurrent protection. Use 0 (the motor's own default) \
+                 unless you have measured the direction on this rig",
+                self.limits.accel
+            ));
         }
         if self.limits.ramp_rpm_per_s <= 0.0 {
             e.push(format!(
@@ -522,11 +526,28 @@ mod tests {
     }
 
     #[test]
-    fn accel_1_warns_but_does_not_refuse() {
-        let text = SHIPPED.replace("accel = 5", "accel = 1");
-        let report = parsed(&text).validate();
-        assert!(report.errors.is_empty());
-        assert!(report.warnings.iter().any(|w| w.contains("accel")));
+    fn a_nonzero_accel_warns_but_does_not_refuse() {
+        // Any nonzero byte asserts a ramp direction no vendor source states,
+        // so it warns — in either direction, not just at `1`. It is still a
+        // legitimate thing to set once measured, so it must never be fatal.
+        for guess in ["accel = 1", "accel = 5", "accel = 40"] {
+            let text = SHIPPED.replace("accel = 0", guess);
+            let report = parsed(&text).validate();
+            assert!(report.errors.is_empty(), "{guess}: {:#?}", report.errors);
+            assert!(
+                report.warnings.iter().any(|w| w.contains("accel")),
+                "{guess}: {:#?}",
+                report.warnings
+            );
+        }
+        // The shipped `accel = 0` asks the motor for its own ramp and so
+        // asserts nothing — no accel warning at all.
+        let report = parsed(SHIPPED).validate();
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("accel")),
+            "{:#?}",
+            report.warnings
+        );
     }
 
     #[test]

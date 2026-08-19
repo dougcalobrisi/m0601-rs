@@ -123,8 +123,10 @@ grounds for rejection.
 - The 16-bit big-endian value in bytes 2–3 is interpreted **per the active
   mode**. Zero is *not* universally "stop": 0 rpm in velocity, "drive to 0°" in
   position, "zero torque" (coast) in current.
-- **Acceleration** (byte 6): 0–255. `0` = motor default; `1` = *fastest* ramp;
-  larger = gentler.
+- **Acceleration** (byte 6): 0–255. `0` = the motor's own default ramp.
+  **Which end of the range is the gentle one is undocumented and unmeasured** —
+  see [contradiction 6](#known-contradictions-between-sources) before assuming a bigger number is
+  softer.
 - **Brake** (byte 7): `0xFF` engages the electric brake (velocity mode only);
   otherwise `0x00`.
 
@@ -277,12 +279,59 @@ only the 500 Hz maximum.
 MotorLink and navigation_robot send 5×. Sending 5× is harmless (the frames are
 idempotent) and is what this crate does.
 
-**6. Acceleration byte unit vs direction — unresolved.** The wiki states the unit as
-"1 rpm per 0.1 ms", i.e. a *rate*, under which a larger value would ramp *faster*.
-Every source — the wiki included — also says `1` is the fastest ramp and larger values
-are gentler, which is the behaviour of a *time constant*. The two cannot both hold.
-Not yet resolved against hardware, so this crate documents only the direction, which
-all sources agree on.
+**6. Acceleration byte direction — unstated everywhere, and this crate used to claim
+otherwise.** Earlier versions of this page said "every source, the wiki included, says
+`1` is the fastest ramp and larger values are gentler." **That claim was wrong: no
+source says it.** What the sources actually say:
+
+The **upstream DDT manual** (`M0601C_111 Motor Driver Instructions`,
+[PDF](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf),
+p. 10) gives one sentence, and it is only a unit:
+
+> "Acceleration：Valid in velocity loop. unity: RPM/0.1ms. When set to 0, it would be
+> the default value"
+
+No direction, no worked example, and — note — no statement that the default equals
+`1`. `RPM/0.1ms` is a **rate**, and if the unit is taken at face value a *larger* byte
+ramps *harder*, the opposite of what this crate documented.
+
+The **DFRobot wiki** ([FIT1042](https://wiki.dfrobot.com/fit1042/docs/23322), identical
+on [FIT1038](https://wiki.dfrobot.com/fit1038/docs/23322)) repeats the sentence with
+additions, and the result contradicts itself three ways:
+
+> "Acceleration time: Valid in velocity loop mode. unity: 1 rpm/0.1 ms. When you set to
+> 1, acceleration time is 10*0.1 ms = 1 ms each 1 rpm. When set to 0, it would be the
+> default value as 1."
+
+1. The field is renamed "acceleration **time**", but the unit given is a **rate**.
+2. The worked example re-reads that unit as **time per rpm** — the inverse orientation.
+3. The factor of ten is unexplained: setting the byte to `1` supposedly yields
+   `10 * 0.1 ms`, not `1 * 0.1 ms`.
+
+The wiki's one durable addition is that the default equals `1`, which is why
+`DEFAULT_DRIVE_ACCEL` is `1` — that is a statement about the *default*, not about
+direction. **MotorLink**'s README inverts the unit again ("`0` = default
+(`1` = 0.1ms/rpm)"), i.e. time per rpm.
+
+Eight independent implementations were checked (tech-life-hacking/DDT_M0601C_111,
+DDTRobot/motor-driver-examples, Il1yasviel/navigation_robot,
+HarvestX/DDT-M0601C-112-U2D2, Ar-Ray-code/ddt_m06_ros2_driver,
+takex5g/M5_DDTMotor_M15M06, LonelyMarch/Basic_Framework_MC02, MotorLink) along with the
+DFRobot product pages, Hackster, ElectronicWings and Instructables. **None states the
+direction, and no published measurement resolves it.**
+
+Consequently this crate no longer picks a side, and no longer picks byte values that
+depend on one: `BusTiming::stop_accel`, the `control` CLI default, and the shipped
+`m0601-quad` `limits.accel` are all `0` (the motor's own default) where they were
+previously `5`, `3` and `5` — numbers chosen on the assumption that larger is gentler,
+which the upstream unit contradicts. `m0601-quad` warns on any nonzero `limits.accel`.
+The direction-independent way to keep a launch under the 3 A trip is to bound the
+*step*, with `SlewLimiter`, not to guess at this byte.
+
+**Settling it** needs a rig, not another source: command a step from 0 to a fixed RPM
+at `accel = 1`, repeat at `20` and `100`, log telemetry, compare time-to-setpoint. If
+time-to-setpoint grows with the byte, larger is gentler; if it shrinks, the unit is
+literal. Tracked in [#2](https://github.com/dougcalobrisi/m0601-rs/issues/2).
 
 **7. Minor spec conflicts.** No-load current ≤ 0.25 A (product page) vs ≤ 0.2 A
 (MotorLink README); mounting thread depth 5 mm (wiki) vs 6 mm (README); supply 18 V

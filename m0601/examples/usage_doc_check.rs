@@ -79,7 +79,7 @@ fn timing_example() -> m0601::Result<()> {
     // and drive-accel defaults — set from your own config, defaults unchanged.
     let bus = Bus::open("/dev/ttyUSB0", Duration::from_millis(150))?
         .with_timing(m0601::BusTiming {
-            stop_accel: 5,
+            stop_accel: 0, // the motor's own default ramp
             ..m0601::BusTiming::default()
         })
         .with_default_accel(10); // every motor's drive_velocity default

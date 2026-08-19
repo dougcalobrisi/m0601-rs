@@ -113,7 +113,7 @@ m0601 info                     # config + one-shot live readout
 m0601 monitor --hz 5           # live line dashboard, Ctrl+C to stop
 m0601 monitor --csv log.csv    # ... also log rows to CSV
 m0601 control --rpm 100        # full-screen keyboard control (see below)
-m0601 control --accel 1        # ... with the motor's fastest ramp (default 3)
+m0601 control --accel 0        # ... with the motor's own default ramp (default 3)
 m0601 drive velocity --rpm 100 --secs 3  # spin at 100 RPM for 3 s, then brake
 m0601 drive current --amps 1.0           # hold ~1 A of torque (until Ctrl-C)
 m0601 drive position --deg 180           # rotate to 180° and hold (needs <10 RPM)
@@ -166,10 +166,12 @@ cannot prove only one is connected. Expect it to take ~40 s.
 `1`–`5` set a *sustained* setpoint that holds until `S`, `K`, `Q`, or a signal.
 Do not walk away from a spinning wheel expecting it to stop on its own.
 
-`--accel` sets the ramp used for active driving (default `3`, gentler than the
-motor's fastest `1`) — a keystroke commands a large step, and the sharpest ramp
-can trip the 3 A overcurrent protection on a loaded wheel. The *stop* ramp is
-separate; see below.
+`--accel` sets the frame's ramp byte for active driving (default `3`; `0` asks
+for the motor's own default). A keystroke commands a large step, and a large
+step on a loaded wheel can trip the 3 A overcurrent protection — but **which
+end of this byte's range softens the ramp is undocumented and unmeasured**, so
+do not assume a bigger number is gentler. See the [protocol
+notes](docs/content/docs/protocol.md). The *stop* ramp is separate; see below.
 
 `P` is refused at 10 RPM or above, and also when no telemetry has arrived —
 without a reading the speed is unknown, not zero. Entering position mode
@@ -182,9 +184,9 @@ requested one if the two ever disagree.
 Safety: the wheel is stopped on every exit path — quit keys, panics,
 SIGINT/SIGTERM/SIGHUP (e.g. a dropped SSH session). `safe_stop` sends 5×
 mode-switch-to-velocity, then 5× velocity-0, then 5× brake, ~300 ms in all;
-the ramp to zero uses a moderate acceleration by default (tunable via
-`Bus::with_stop_accel` / `BusTiming`) so a hard step can't trip the
-overcurrent protection mid-stop, and the brake rounds still hold it firmly.
+the ramp to zero asks for the motor's own default acceleration (`0`, tunable
+via `Bus::with_stop_accel` / `BusTiming`) rather than guessing at a byte whose
+direction no vendor source states, and the brake rounds still hold it firmly.
 On SIGKILL or power loss the polling simply stops and the motor coasts, per
 protocol. Keep the wheel clear before spinning it.
 

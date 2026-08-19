@@ -23,17 +23,24 @@ up a motor by hand and reacting to what you see. Its non-interactive twin is
 | Flag | Default | Meaning |
 |---|---|---|
 | `--rpm` | `100` | the speed the `F` and `B` keys drive at (−330..330) |
-| `--accel` | `3` | velocity ramp: `1` = fastest, larger = gentler, `0` = motor default |
+| `--accel` | `0` | velocity ramp byte; `0` asks the motor for its own default. Direction [undocumented]({{< relref "../protocol" >}}#known-contradictions-between-sources) — sweep it, don't assume |
 
-`--accel` defaults to `3` rather than the motor's fastest `1` on purpose. A keystroke
-here commands a *large instantaneous step* — `F` jumps straight to the full preset,
-and `F` → `B` is a complete reversal — and the sharpest ramp can spike current past
-the 3 A bus-overcurrent trip on a loaded wheel. Pass `--accel 1` if you want the
-snappy response and know the wheel is unloaded.
+`--accel` defaults to `0` — the motor's own default ramp — on purpose. A keystroke here
+commands a *large instantaneous step*: `F` jumps straight to the full preset, and
+`F` → `B` is a complete reversal, either of which can spike current past the 3 A
+bus-overcurrent trip on a loaded wheel. The frame's accel byte is the lever on that
+ramp, but **which end of its range is the gentle one is undocumented and unmeasured**
+([details]({{< relref "../protocol" >}}#known-contradictions-between-sources)). This
+default was `3`, picked to be "gentler than `1`" — an assumption the upstream manual's
+rate unit contradicts. Rather than ship a guess that may be backwards, `control` asks
+the motor for its own ramp.
+
+Pass a nonzero `--accel` once you have swept the byte on your own wheel and know which
+way it goes. A lower `--rpm` is the direction-independent way to soften a keystroke.
 
 This is the ramp for *active driving* only. The **stop** ramp is separate: `safe_stop`
-uses the library's own moderate `SAFE_STOP_ACCEL`, and `control` always uses that
-default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
+uses the library's `SAFE_STOP_ACCEL` (also `0`), and `control` always uses that default
+([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
 
 `control` is the one subcommand that ignores `--timeout` completely — it opens the
 port with a fixed 50 ms timeout and its loop uses a fixed 6 ms reply wait, so nothing

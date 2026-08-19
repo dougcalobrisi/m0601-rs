@@ -206,8 +206,7 @@ impl<T: Transport> M0601<T> {
     /// default ([`Bus::with_default_accel`]); this overrides it for one
     /// handle. The per-call [`drive_velocity_accel`](Self::drive_velocity_accel)
     /// always takes precedence. Defaults to
-    /// [`DEFAULT_DRIVE_ACCEL`](crate::DEFAULT_DRIVE_ACCEL) (the motor's
-    /// fastest ramp).
+    /// [`DEFAULT_DRIVE_ACCEL`](crate::DEFAULT_DRIVE_ACCEL).
     #[must_use]
     pub fn with_default_accel(mut self, accel: u8) -> Self {
         self.default_accel = accel;
@@ -386,8 +385,7 @@ impl<T: Transport> M0601<T> {
     /// Must be resent at ≥50 Hz to sustain motion — see the type-level docs.
     ///
     /// Uses this handle's default accel —
-    /// [`DEFAULT_DRIVE_ACCEL`](crate::DEFAULT_DRIVE_ACCEL) (the motor's
-    /// *fastest* ramp) unless changed with
+    /// [`DEFAULT_DRIVE_ACCEL`](crate::DEFAULT_DRIVE_ACCEL) unless changed with
     /// [`with_default_accel`](Self::with_default_accel) /
     /// [`Bus::with_default_accel`]. Pass an explicit ramp per call with
     /// [`drive_velocity_accel`](Self::drive_velocity_accel).
@@ -397,17 +395,19 @@ impl<T: Transport> M0601<T> {
 
     /// Send one velocity drive frame with an explicit acceleration.
     ///
-    /// `0` selects the motor's default; `1` — what
-    /// [`drive_velocity`](Self::drive_velocity) uses — is the *fastest*
-    /// ramp, not a gentle one, and larger values ramp more gently. A large
-    /// step at `accel: 1` draws a current spike that can trip the motor's
-    /// 3 A bus-overcurrent protection on a loaded wheel; raise the value to
-    /// soften it.
+    /// `0` selects the motor's default; `1` is what
+    /// [`drive_velocity`](Self::drive_velocity) uses, and is what the DFRobot
+    /// wiki says that default equals.
     ///
-    /// The vendor sources also give this byte a unit ("1 RPM per 0.1 ms")
-    /// that reads as a rate, which contradicts the ramp direction above.
-    /// That contradiction is unresolved, so only the direction is documented
-    /// — see [`frame_velocity`](crate::protocol::frame_velocity).
+    /// **Which direction softens the ramp is undocumented and unmeasured** —
+    /// see [`frame_velocity`](crate::protocol::frame_velocity). Do not assume
+    /// a larger byte is gentler: the upstream manual's only statement about
+    /// this field is a rate unit, under which a larger byte ramps *harder*.
+    /// The hazard is real either way — a large velocity step draws a current
+    /// spike that can trip the motor's 3 A bus-overcurrent protection on a
+    /// loaded wheel — but the reliable mitigation is to shrink the *step*,
+    /// with [`SlewLimiter`](crate::SlewLimiter), rather than to guess at this
+    /// byte. Sweep it on your own hardware before relying on it.
     pub fn drive_velocity_accel(&mut self, rpm: i16, accel: u8) -> Result<()> {
         let rpm = if self.mirrored {
             rpm.saturating_neg()
