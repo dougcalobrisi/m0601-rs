@@ -783,3 +783,302 @@ fn stop_ramp_curve_capture() {
         }
     );
 }
+
+/// One telemetry sample from a phase capture: elapsed ms, signed RPM, signed
+/// amps, raw fault byte.
+type Sample = (u128, i16, f32, u8);
+
+/// Spin the wheel up to `target` and hold there briefly, so a following
+/// measurement starts from a settled wheel. Returns false if it never
+/// reached 90% of setpoint.
+fn spin_up_to(m: &mut M0601, target: i16, hold: Duration) -> bool {
+    let up = m0601::protocol::frame_velocity(m.id(), target, 1);
+    let want = f32::from(target) * 0.9;
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    let mut at_speed: Option<Instant> = None;
+    while Instant::now() < deadline {
+        if let Ok(Some(fb)) = m.transact(&up, Duration::from_millis(4))
+            && at_speed.is_none()
+            && f32::from(fb.speed_rpm) >= want
+        {
+            at_speed = Some(Instant::now());
+        }
+        if at_speed.is_some_and(|t| t.elapsed() > hold) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+/// Winding temperature, which only a `0x74` query reply carries.
+fn winding_temp(m: &mut M0601) -> Option<u8> {
+    m.query().ok().flatten().and_then(|fb| fb.temp_c)
+}
+
+/// Where the braking energy goes — the loose end from [`stop_ramp_capture`].
+///
+/// That capture showed velocity-0 frames shedding speed far faster than
+/// coasting while the reported current sat near **zero**, which is physically
+/// odd: the kinetic energy has to go somewhere. It also recorded current as a
+/// magnitude, discarding the sign, so a regenerative (negative) current would
+/// have been invisible as such.
+///
+/// This answers the question that actually affects code — **is the reported
+/// current field blind while the motor brakes?** — because `m0601-quad` trips
+/// its vehicle-wide stop off that field (`limits.current_trip_a`), and a field
+/// that reads ~0 during braking is a hole in that monitor. It also settles
+/// whether a velocity-0 stop can trip the 3 A **bus** protection at all: if
+/// the energy never crosses the bus, it structurally cannot, and the separate
+/// 4.6 A **phase** overcurrent bit is the only thing that could fire.
+///
+/// Part A logs signed current and fault bits through steady running, a
+/// velocity-0 stop, and a brake stop. Part B is a thermal probe: equal numbers
+/// of spin-ups, differing only in how the wheel returns to rest (braked vs
+/// coasting), to see whether braking dissipates measurably in the windings.
+/// Part B is expected to be inconclusive — an unloaded rotor at this speed
+/// carries little energy and the temperature field is 1 °C granular — so treat
+/// a null result there as "too small to see", not as evidence of absence.
+///
+/// ```sh
+/// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
+///   cargo test -p m0601 --test hardware -- --ignored --nocapture braking_current_capture
+/// ```
+///
+/// **Spins the wheel many times, for a few minutes. Get it off the ground.**
+#[test]
+#[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
+fn braking_current_capture() {
+    let _guard = port_guard();
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "braking_current_capture spins the wheel; set M0601_ALLOW_MOTION=1 to allow it"
+    );
+
+    const SAMPLE_GAP: Duration = Duration::from_millis(5);
+    const REPLY_WAIT: Duration = Duration::from_millis(4);
+    const HOLD: Duration = Duration::from_millis(400);
+    /// Cycles per thermal trial.
+    const CYCLES: usize = 12;
+    /// A coast is over when the wheel is this slow, or when the cap expires.
+    const COAST_CAP: Duration = Duration::from_millis(8000);
+    const REST_RPM: i16 = 5;
+
+    let target: i16 = std::env::var("M0601_TEST_RPM")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(120);
+
+    let mut guard = StopOnDrop(Some(open()));
+    let m = guard.0.as_mut().expect("just constructed");
+    m.set_mode(Mode::Velocity).expect("set velocity mode");
+
+    // ── Part A: signed current and faults through each phase ─────────────
+    eprintln!("\n== Part A: signed current through each phase ==\n");
+
+    // One entry per phase: its label and its telemetry samples.
+    let mut phases: Vec<(&str, Vec<Sample>)> = Vec::new();
+
+    for phase in ["steady 120 RPM", "velocity-0 stop", "brake stop"] {
+        assert!(
+            spin_up_to(m, target, HOLD),
+            "wheel never reached speed before the {phase} phase"
+        );
+        let frame = match phase {
+            "steady 120 RPM" => m0601::protocol::frame_velocity(m.id(), target, 1),
+            "brake stop" => m0601::protocol::frame_brake(m.id()),
+            _ => m0601::protocol::frame_velocity(m.id(), 0, 5),
+        };
+        let window = if phase == "steady 120 RPM" {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_millis(600)
+        };
+        let start = Instant::now();
+        let mut samples = Vec::new();
+        while start.elapsed() < window {
+            if let Ok(Some(fb)) = m.transact(&frame, REPLY_WAIT) {
+                samples.push((
+                    start.elapsed().as_millis(),
+                    fb.speed_rpm,
+                    // SIGNED, deliberately: a regenerative current would show
+                    // as negative, and every earlier capture threw that away.
+                    fb.current_a,
+                    fb.faults.0,
+                ));
+                if phase != "steady 120 RPM" && fb.speed_rpm.abs() < REST_RPM {
+                    break;
+                }
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+        phases.push((
+            match phase {
+                "steady 120 RPM" => "steady",
+                "brake stop" => "brake",
+                _ => "velocity-0",
+            },
+            samples,
+        ));
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(700));
+    }
+
+    eprintln!(
+        "{:>12}  {:>8}  {:>10}  {:>10}  {:>10}  {:>14}",
+        "phase", "samples", "min A", "max A", "mean |A|", "faults seen"
+    );
+    for (label, s) in &phases {
+        if s.is_empty() {
+            eprintln!("{label:>12}  {:>8}", 0);
+            continue;
+        }
+        let min = s.iter().map(|x| x.2).fold(f32::INFINITY, f32::min);
+        let max = s.iter().map(|x| x.2).fold(f32::NEG_INFINITY, f32::max);
+        let mean = s.iter().map(|x| x.2.abs()).sum::<f32>() / s.len() as f32;
+        let bits = s.iter().fold(0u8, |acc, x| acc | x.3);
+        eprintln!(
+            "{label:>12}  {:>8}  {min:>10.2}  {max:>10.2}  {mean:>10.2}  {:>14}",
+            s.len(),
+            format!("{}", m0601::Faults(bits))
+        );
+    }
+
+    // The first few samples of a stop are where any spike lives.
+    for (label, s) in &phases {
+        if *label == "steady" {
+            continue;
+        }
+        let head: Vec<String> = s
+            .iter()
+            .take(12)
+            .map(|(ms, rpm, a, _)| format!("{ms}ms {rpm}rpm {a:+.2}A"))
+            .collect();
+        eprintln!("\n{label} first samples: {}", head.join(", "));
+    }
+
+    // ── Part B: thermal probe ────────────────────────────────────────────
+    //
+    // Both trials perform the SAME number of spin-ups, so spin-up heating
+    // cancels. They differ only in how the wheel returns to rest. If braking
+    // dissipates in the windings, the braked trial should end hotter.
+    eprintln!("\n== Part B: thermal probe ({CYCLES} cycles each) ==\n");
+
+    let thermal = |m: &mut M0601, braked: bool| -> (Option<u8>, Option<u8>, f64) {
+        let before = winding_temp(m);
+        let t0 = Instant::now();
+        for _ in 0..CYCLES {
+            m.set_mode(Mode::Velocity).ok();
+            if !spin_up_to(m, target, Duration::from_millis(150)) {
+                break;
+            }
+            if braked {
+                let zero = m0601::protocol::frame_velocity(m.id(), 0, 5);
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_millis(1200) {
+                    if let Ok(Some(fb)) = m.transact(&zero, REPLY_WAIT)
+                        && fb.speed_rpm.abs() < REST_RPM
+                    {
+                        break;
+                    }
+                    std::thread::sleep(SAMPLE_GAP);
+                }
+            } else {
+                // Coast: send nothing that drives. Poll only, so the wheel
+                // slows on its own — the control for "same spin-ups, no brake".
+                let start = Instant::now();
+                while start.elapsed() < COAST_CAP {
+                    if let Ok(Some(fb)) = m.query_with(REPLY_WAIT)
+                        && fb.speed_rpm.abs() < REST_RPM
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        let elapsed = t0.elapsed().as_secs_f64();
+        std::thread::sleep(Duration::from_millis(500));
+        (before, winding_temp(m), elapsed)
+    };
+
+    let (b0, b1, b_secs) = thermal(m, true);
+    eprintln!(
+        "braked  : {} -> {} °C over {b_secs:.0} s",
+        b0.map_or("?".into(), |t| t.to_string()),
+        b1.map_or("?".into(), |t| t.to_string()),
+    );
+
+    // Let it settle back down so the second trial does not inherit the first
+    // trial's heat. Not a full cooldown — just enough to stop the trend.
+    eprintln!("cooling 90 s…");
+    std::thread::sleep(Duration::from_secs(90));
+
+    let (c0, c1, c_secs) = thermal(m, false);
+    eprintln!(
+        "coasting: {} -> {} °C over {c_secs:.0} s",
+        c0.map_or("?".into(), |t| t.to_string()),
+        c1.map_or("?".into(), |t| t.to_string()),
+    );
+
+    m.safe_stop();
+
+    // ── Verdict ──────────────────────────────────────────────────────────
+    eprintln!();
+    if let Some((_, s)) = phases.iter().find(|(l, _)| *l == "velocity-0") {
+        let max_mag = s.iter().map(|x| x.2.abs()).fold(0.0_f32, f32::max);
+        let most_negative = s.iter().map(|x| x.2).fold(f32::INFINITY, f32::min);
+        eprintln!(
+            "Q — is the current field blind while braking? velocity-0 peak magnitude \
+             {max_mag:.2} A, most negative {most_negative:+.2} A."
+        );
+        if max_mag < 1.0 {
+            eprintln!(
+                "    YES: the wheel sheds most of its speed while the reported current \
+                 stays under {max_mag:.2} A. A monitor watching this field cannot see a \
+                 velocity-0 stop, and such a stop cannot trip the 3 A BUS protection — \
+                 the 4.6 A PHASE bit would be the only visible signal."
+            );
+        } else {
+            eprintln!(
+                "    NO: braking draws {max_mag:.2} A, visible to a current monitor. \
+                 The earlier ~0 A readings were an artefact."
+            );
+        }
+        if most_negative < -0.1 {
+            eprintln!(
+                "    Current DOES go negative ({most_negative:+.2} A) — regeneration is \
+                 reported, just small."
+            );
+        } else {
+            eprintln!(
+                "    Current never goes meaningfully negative, so the field is not \
+                 reporting regeneration at all (it is not a signed-energy readout)."
+            );
+        }
+    }
+    match (b0, b1, c0, c1) {
+        (Some(b0), Some(b1), Some(c0), Some(c1)) => {
+            let (db, dc) = (i16::from(b1) - i16::from(b0), i16::from(c1) - i16::from(c0));
+            eprintln!("\nThermal: braked ΔT {db:+} °C, coasting ΔT {dc:+} °C.");
+            if (db - dc).abs() <= 1 {
+                eprintln!(
+                    "    INCONCLUSIVE, as expected: the difference is within the 1 °C \
+                     resolution. Too little energy in an unloaded rotor to resolve. This \
+                     neither supports nor refutes dissipation in the windings."
+                );
+            } else if db > dc {
+                eprintln!(
+                    "    Braking heats the winding {} °C more than coasting for the same \
+                     number of spin-ups — consistent with the energy being dissipated in \
+                     the motor rather than returned to the bus.",
+                    db - dc
+                );
+            } else {
+                eprintln!("    Braking did NOT heat the winding more than coasting.");
+            }
+        }
+        _ => eprintln!("\nThermal: inconclusive — temperature unavailable."),
+    }
+}
