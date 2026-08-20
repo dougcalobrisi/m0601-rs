@@ -867,10 +867,7 @@ fn accel_curve_capture() {
     let m = guard.0.as_mut().expect("just constructed");
     m.set_mode(Mode::Velocity).expect("set velocity mode");
 
-    eprintln!(
-        "\naccel curve capture: step 0 -> {target} RPM at accel {:?}, full curve\n",
-        PROBES
-    );
+    eprintln!("\naccel curve capture: step 0 -> {target} RPM at accel {PROBES:?}, full curve\n");
 
     // (elapsed_ms, signed rpm, signed amps) per probe.
     let mut curves: Vec<Vec<(u128, i16, f32)>> = Vec::new();
