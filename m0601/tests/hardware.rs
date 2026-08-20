@@ -1089,3 +1089,129 @@ fn braking_current_capture() {
         _ => eprintln!("\nThermal: inconclusive — temperature unavailable."),
     }
 }
+
+/// Is [`braking_current_capture`]'s near-zero braking current real, or an
+/// artefact of sampling too slowly?
+///
+/// That capture sampled every ~9 ms and saw the whole braking transient in a
+/// **single sample** (−0.63 A for velocity-0, −1.99 A for the brake). A single
+/// sample is exactly what aliasing looks like: if the real waveform is spiky,
+/// a 9 ms sampler will miss most of it and report a mean near zero whatever is
+/// actually happening.
+///
+/// This re-runs the stop at the protocol's rate ceiling — the bus is opened
+/// with a much smaller inter-frame gap and the loop never sleeps — and prints
+/// the achieved cadence alongside the curve, so the reading can be judged
+/// against the rate it was taken at.
+///
+/// It matters because the docs claim a velocity-0 stop cannot trip the 3 A
+/// *bus* protection "since almost nothing crosses the bus". That claim rests
+/// on the mean being real. (The separate finding — that a current *monitor*
+/// cannot see a velocity-0 stop — holds either way, and more strongly if the
+/// waveform is spiky, since `m0601-quad` polls each wheel only every ~144 ms.)
+///
+/// ```sh
+/// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
+///   cargo test -p m0601 --test hardware -- --ignored --nocapture braking_current_fast_capture
+/// ```
+///
+/// **Spins the wheel. Get it off the ground first.**
+#[test]
+#[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
+fn braking_current_fast_capture() {
+    let _guard = port_guard();
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "braking_current_fast_capture spins the wheel; set M0601_ALLOW_MOTION=1"
+    );
+
+    /// Well under the default 2.5 ms. The default is sized so a reply can
+    /// never still be on the wire when the next frame starts; `transact`
+    /// already waits for the reply, so the gap is the throttle here, not the
+    /// safety margin. If it is too small the replies stop parsing — which
+    /// shows up as a collapsed sample count, printed below.
+    const FAST_GAP: Duration = Duration::from_micros(300);
+    /// Measured turnaround on this class of rig is ~1.0–1.5 ms.
+    const REPLY_WAIT: Duration = Duration::from_micros(1800);
+    const WINDOW: Duration = Duration::from_millis(250);
+
+    let target: i16 = std::env::var("M0601_TEST_RPM")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(120);
+    let id = motor_id();
+
+    let bus = m0601::Bus::open(&port(), TIMEOUT)
+        .expect("open serial port")
+        .with_min_gap(FAST_GAP);
+    let mut guard = StopOnDrop(Some(bus.motor(id).expect("valid id")));
+    let m = guard.0.as_mut().expect("just constructed");
+    m.set_mode(Mode::Velocity).expect("set velocity mode");
+
+    eprintln!(
+        "\nfast braking capture: min_gap {} µs, reply_wait {} µs\n",
+        FAST_GAP.as_micros(),
+        REPLY_WAIT.as_micros()
+    );
+
+    for (label, braking) in [("velocity-0", true), ("brake", false)] {
+        assert!(
+            spin_up_to(m, target, Duration::from_millis(400)),
+            "wheel never reached speed before the {label} phase"
+        );
+        let frame = if braking {
+            m0601::protocol::frame_velocity(m.id(), 0, 5)
+        } else {
+            m0601::protocol::frame_brake(m.id())
+        };
+
+        let start = Instant::now();
+        let mut samples: Vec<(u128, i16, f32)> = Vec::new();
+        // No sleep: the bus's own gap is the only pacing.
+        while start.elapsed() < WINDOW {
+            if let Ok(Some(fb)) = m.transact(&frame, REPLY_WAIT) {
+                samples.push((start.elapsed().as_micros(), fb.speed_rpm, fb.current_a));
+            }
+        }
+
+        let cadence = if samples.len() > 1 {
+            let span = samples[samples.len() - 1].0 - samples[0].0;
+            span as f64 / (samples.len() - 1) as f64 / 1000.0
+        } else {
+            f64::NAN
+        };
+        let peak = samples.iter().map(|s| s.2.abs()).fold(0.0_f32, f32::max);
+        let mean = if samples.is_empty() {
+            0.0
+        } else {
+            samples.iter().map(|s| s.2.abs()).sum::<f32>() / samples.len() as f32
+        };
+        // How much of the window was spent above a current that matters?
+        let over_1a = samples.iter().filter(|s| s.2.abs() >= 1.0).count();
+
+        eprintln!(
+            "{label}: {} samples, {cadence:.2} ms apart, peak |{peak:.2}| A, \
+             mean |{mean:.2}| A, {over_1a} samples >= 1 A",
+            samples.len()
+        );
+        let head: Vec<String> = samples
+            .iter()
+            .take(24)
+            .map(|(us, rpm, a)| format!("{:.1}ms {rpm}rpm {a:+.2}A", *us as f64 / 1000.0))
+            .collect();
+        eprintln!("  {}\n", head.join(", "));
+
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(700));
+    }
+
+    m.safe_stop();
+    eprintln!(
+        "Compare against braking_current_capture at ~9 ms: velocity-0 peak 0.63 A, \
+         mean 0.03 A. If the peak and mean here are close to those, the slow sampler \
+         was not aliasing and the near-zero braking current is real. If this run finds \
+         a much larger peak, the doc claim that 'almost nothing crosses the bus' must \
+         be softened to 'reported current stays near zero'."
+    );
+}
