@@ -45,7 +45,7 @@ accel = 5              # NEVER 0 or 1 on a vehicle: both are the motor's
 ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
                        # ramp. All-stop and fault stops BYPASS it.
 current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp.
-                       # Blind to a velocity-0 stop: that phase reports ~0.04 A
+                       # Blind to a velocity-0 stop: that phase reports ~0.03 A
                        # while shedding real speed. The brake transient hits
                        # -2.28 A unloaded for ~16 ms — closer to this 2.5 A
                        # threshold than is comfortable, and that figure is a

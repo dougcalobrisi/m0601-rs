@@ -38,8 +38,8 @@ ramp slows quickly — a step to 120 RPM takes ~2 s at `5` — and a dashboard t
 seconds to answer a keypress would be its own hazard.
 
 This is the ramp for *active driving* only. The **stop** ramp is separate: `safe_stop`
-uses the library's own moderate `SAFE_STOP_ACCEL`, and `control` always uses that
-default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
+sends its own `SAFE_STOP_ACCEL` — measured inert on deceleration — and `control` always
+uses that default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
 
 `control` is the one subcommand that ignores `--timeout` completely — it opens the
 port with a fixed 50 ms timeout and its loop uses a fixed 6 ms reply wait, so nothing

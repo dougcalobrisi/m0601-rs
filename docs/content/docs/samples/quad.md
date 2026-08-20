@@ -124,13 +124,14 @@ Three of those values carry the lessons this repo learned the hard way:
   [Budgeting the wire]({{< relref "../library/budgeting" >}}). The 20 ms floor caps
   the total budget, so more cycle slack costs coast margin and vice versa; only a
   *measured* smaller `min_gap` buys both.
-The current trip deserves one more note: it is **blind to a velocity-0 stop**. That
-phase reports ~0.03 A while the wheel sheds real speed
-([measured]({{< relref "../concepts/stopping-safely" >}})), so a low reading during a
-stop is not evidence of an idle wheel. The brake phase, by contrast, hits −2.28 A for
-~16 ms unloaded — uncomfortably close to this 2.5 A threshold, and a *floor* rather than
-a peak, since telemetry cannot sample faster than ~8 ms. That is why `current_trip_ms`
-debouncing matters: without it the brake transient alone could trip the vehicle.
+- **The current trip is blind to a velocity-0 stop.** That phase reports ~0.03 A
+  while the wheel sheds real speed
+  ([measured]({{< relref "../concepts/stopping-safely" >}})), so a low reading during
+  a stop is not evidence of an idle wheel. The brake phase, by contrast, hits −2.28 A
+  for ~16 ms unloaded — uncomfortably close to this 2.5 A threshold, and a *floor*
+  rather than a peak, since telemetry cannot sample faster than ~8 ms. That is why
+  `current_trip_ms` debouncing matters: without it the brake transient alone could
+  trip the vehicle.
 
 - **`invert` XOR `mirrored`.** `invert` is what you observed; `mirrored` is the SKU's
   build. Only their XOR matters, and the dashboard shows the effective direction as a

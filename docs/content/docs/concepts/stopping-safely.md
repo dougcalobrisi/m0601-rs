@@ -31,7 +31,7 @@ unloaded wheel from 120 RPM:
 | after 100 ms of… | speed left | current while stopping |
 |---|---|---|
 | nothing (coasting) | 119 RPM | 0.39 A |
-| velocity-0 rounds | ~64 RPM | −0.69 A transient, then **~0.04 A mean** |
+| velocity-0 rounds | ~64 RPM | −0.63 A transient, then **~0.03 A mean** |
 | brake rounds | 13 RPM | −2.28 A transient (~16 ms), then ~0.6–0.85 A |
 
 Two things follow, and both correct what this page used to say.

@@ -46,8 +46,6 @@ use state::Shared;
 
 /// Default velocity ramp for interactive driving (`--accel`).
 ///
-/// Default velocity ramp for interactive driving (`--accel`).
-///
 /// Deliberately **not** the library's
 /// [`m0601::DEFAULT_DRIVE_ACCEL`](m0601::DEFAULT_DRIVE_ACCEL) (`1`), and named
 /// apart from it so the two never read as the same number: `drive velocity` and
