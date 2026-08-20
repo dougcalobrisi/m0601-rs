@@ -28,11 +28,11 @@ then five brake frames, 20 ms apart — about 300 ms.
 Both phases were measured (`stop_ramp_capture`, `m0601/tests/hardware.rs`), stopping an
 unloaded wheel from 120 RPM:
 
-| after 100 ms of… | speed left | peak current |
+| after 100 ms of… | speed left | current while stopping |
 |---|---|---|
 | nothing (coasting) | 119 RPM | 0.39 A |
-| velocity-0 rounds | ~64 RPM | ~0.6 A |
-| brake rounds | 13 RPM | **2.0 A** |
+| velocity-0 rounds | ~64 RPM | −0.63 A transient, then **0.03 A mean** |
+| brake rounds | 13 RPM | −1.99 A transient, then 0.6–0.85 A sustained |
 
 Two things follow, and both correct what this page used to say.
 
@@ -44,11 +44,24 @@ range, `0` to `255`, moves that result by about 1 RPM. The full deceleration cur
 only; on this firmware it is inert on the way down. Any advice to pick a gentler stop
 ramp — including advice this page used to give — has no effect.
 
-**The current comes from the brake, not the ramp.** The velocity-0 rounds draw well
-under an amp and fall to essentially zero once the wheel is slowing; the brake rounds
-draw ~2 A unloaded, two-thirds of the way to the 3 A trip. If a stop ever trips
-overcurrent mid-sequence, the brake is the phase to suspect, and `stop_accel` is not the
-lever on it.
+**The current is in the brake, not the ramp — and the ramp is invisible.** Measured
+signed (`braking_current_capture`), the velocity-0 rounds show one −0.63 A transient as
+the setpoint changes and then average **0.03 A** while the wheel sheds 60 RPM. The wheel
+is braking hard and the current telemetry says essentially nothing is happening. The
+brake rounds, by contrast, show a −1.99 A transient followed by 0.6–0.85 A of sustained
+work — unloaded, against a 3 A trip.
+
+Two things follow. A monitor that watches reported current — including `m0601-quad`'s
+`limits.current_trip_a` — **cannot see a velocity-0 stop at all**, so low current during
+a stop is not evidence that the wheel is idle. And a velocity-0 stop cannot plausibly
+trip the 3 A *bus* protection, since almost nothing crosses the bus; the separate 4.6 A
+*phase* bit would be the only signal available. If a stop ever does trip, suspect the
+brake — and `stop_accel` is not the lever on it either.
+
+Where the braking energy actually goes is unresolved. It is consistent with dynamic
+braking (the windings shorted, dissipating internally, invisible to a torque-current
+readout), but that is a hypothesis: a thermal probe at this scale could not resolve it,
+and phase current is not exposed by the protocol.
 
 The brake rounds still deliver the firm final hold, and they are what actually brings the
 wheel to rest: velocity-0 alone takes ~370 ms, the brake ~250 ms, and coasting more than

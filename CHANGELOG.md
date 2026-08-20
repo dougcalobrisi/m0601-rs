@@ -49,14 +49,23 @@ lockstep; `m0601-quad` is a sample and is not published.
   `Bus::with_stop_accel`, `concepts/stopping-safely.md`, the README — now say so. The
   field is kept and still sent, since the measurement is one motor on one firmware.
 
-- **The stop's current draw is documented on the right phase.** The docs said a hard
-  velocity-0 ramp risks the 3 A bus-overcurrent trip mid-stop. Measured on an unloaded
-  wheel, the velocity-0 rounds peak at ~0.6 A and fall to ~0 A, while the *brake* rounds
-  peak at ~2.0 A (2.02 and 2.00 across two runs). If a stop trips overcurrent, the brake
-  is the phase to suspect — and `stop_accel` is not the lever on it.
+- **The stop's current is documented on the right phase, and as invisible.** The docs
+  said a hard velocity-0 ramp risks the 3 A bus-overcurrent trip mid-stop.
+  `braking_current_capture` logs current *signed* through each phase of a stop on an
+  unloaded wheel: the velocity-0 rounds show one −0.63 A transient at the setpoint
+  change and then average **0.03 A** while the wheel sheds 60 RPM, while the brake
+  rounds show a −1.99 A transient followed by 0.6–0.85 A sustained.
+
+  So a velocity-0 stop is effectively invisible to any monitor watching reported
+  current — including `m0601-quad`'s `limits.current_trip_a` — and cannot plausibly trip
+  the 3 A *bus* protection, since almost nothing crosses the bus. Documented in
+  `concepts/stopping-safely.md` and on `SAFE_STOP_ACCEL`, so low current during a stop
+  is not read as an idle wheel.
 
   The velocity-0 rounds are still worth their 100 ms: they shed nearly half the speed
-  (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM).
+  (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM). Where that
+  energy goes is unresolved — consistent with dynamic braking, but the protocol does not
+  expose phase current and a thermal probe could not resolve it at this scale.
 
 ### Changed
 

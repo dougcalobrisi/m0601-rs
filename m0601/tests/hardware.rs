@@ -1065,8 +1065,15 @@ fn braking_current_capture() {
             if (db - dc).abs() <= 1 {
                 eprintln!(
                     "    INCONCLUSIVE, as expected: the difference is within the 1 °C \
-                     resolution. Too little energy in an unloaded rotor to resolve. This \
-                     neither supports nor refutes dissipation in the windings."
+                     resolution. Too little energy in an unloaded rotor to resolve."
+                );
+                eprintln!(
+                    "    The control is also weaker than it looks: the two trials take \
+                     very different wall-clock ({b_secs:.0} s braked vs {c_secs:.0} s \
+                     coasting, since a coast to rest takes seconds), so they differ in \
+                     idle time and ambient drift as well as in braking. Reading any \
+                     1 °C difference as signal would be wrong. Resolving this properly \
+                     needs a loaded wheel or an external probe, not this test."
                 );
             } else if db > dc {
                 eprintln!(

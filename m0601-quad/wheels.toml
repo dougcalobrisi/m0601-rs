@@ -44,7 +44,11 @@ accel = 5              # NEVER 0 or 1 on a vehicle: both are the motor's
                        # still trip; past ~10 the rover crawls.
 ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
                        # ramp. All-stop and fault stops BYPASS it.
-current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp
+current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp.
+                       # Blind to a velocity-0 stop: that phase reports ~0.03 A
+                       # while shedding real speed. The brake shows ~2 A
+                       # unloaded, so the debounce is what keeps it from
+                       # nuisance-tripping on the brake transient.
 current_trip_ms = 400.0 # debounce; start-up inrush is normal and shorter
 stale_ms = 500.0       # telemetry older than this: warn (one missed poll is
                        # expected — each wheel is polled every 8th cycle)

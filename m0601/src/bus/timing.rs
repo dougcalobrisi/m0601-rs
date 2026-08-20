@@ -33,10 +33,18 @@ const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// 63 RPM under velocity-0 frames. The ramp phase sheds nearly half the speed
 /// before the brake rounds begin. It simply is not tunable.
 ///
-/// Note which phase actually draws current. On that capture the velocity-0
-/// rounds peaked at ~0.6 A and the brake rounds at ~2.0 A, unloaded, against
-/// a 3 A trip. If a stop ever trips overcurrent mid-sequence, the brake is
-/// the likelier culprit — and this byte is not the lever on it.
+/// Note which phase carries the current. `braking_current_capture` logs it
+/// signed: the velocity-0 rounds show a single −0.63 A transient at the
+/// setpoint change and then **~0.03 A mean** while the wheel sheds 60 RPM,
+/// whereas the brake rounds show a −1.99 A transient followed by ~0.6–0.85 A
+/// of sustained work. Unloaded, against a 3 A trip.
+///
+/// Two consequences. A velocity-0 stop is effectively **invisible** to any
+/// monitor watching reported current, so low current during a stop does not
+/// mean nothing is happening. And such a stop cannot plausibly trip the 3 A
+/// *bus* protection — the separate 4.6 A *phase* bit would be the only
+/// visible signal. If a stop ever trips, look at the brake, and note that
+/// this byte is not the lever on it either.
 ///
 /// One unloaded motor, one firmware. Under load the numbers will differ; that
 /// the byte is inert on deceleration is the part unlikely to change.

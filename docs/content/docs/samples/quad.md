@@ -87,7 +87,7 @@ reply_wait_ms = 2.0    # per-poll reply window; measure it, don't guess
 max_rpm         = 120    # 100% throttle commands exactly this
 accel           = 5      # NEVER 0 or 1 on a vehicle — see below
 ramp_rpm_per_s  = 300.0  # host-side setpoint ramp; all-stop BYPASSES it
-current_trip_a  = 2.5    # monitor trip, not a command clamp
+current_trip_a  = 2.5    # monitor trip, not a command clamp (see note below)
 current_trip_ms = 400.0  # debounce — start-up inrush is normal and shorter
 stale_ms        = 500.0  # telemetry older than this: warn
 dead_ms         = 1500.0 # telemetry older than this: stop the vehicle
@@ -124,6 +124,13 @@ Three of those values carry the lessons this repo learned the hard way:
   [Budgeting the wire]({{< relref "../library/budgeting" >}}). The 20 ms floor caps
   the total budget, so more cycle slack costs coast margin and vice versa; only a
   *measured* smaller `min_gap` buys both.
+The current trip deserves one more note: it is **blind to a velocity-0 stop**. That
+phase reports ~0.03 A while the wheel sheds real speed
+([measured]({{< relref "../concepts/stopping-safely" >}})), so a low reading during a
+stop is not evidence of an idle wheel. The brake phase shows ~2 A unloaded against this
+2.5 A threshold, which is why `current_trip_ms` debouncing matters — without it the
+brake transient alone could trip the vehicle.
+
 - **`invert` XOR `mirrored`.** `invert` is what you observed; `mirrored` is the SKU's
   build. Only their XOR matters, and the dashboard shows the effective direction as a
   `REV` badge — so you can record both truthfully instead of fudging one to fix the
