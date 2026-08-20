@@ -1132,8 +1132,14 @@ fn braking_current_fast_capture() {
     /// safety margin. If it is too small the replies stop parsing — which
     /// shows up as a collapsed sample count, printed below.
     const FAST_GAP: Duration = Duration::from_micros(300);
-    /// Measured turnaround on this class of rig is ~1.0–1.5 ms.
-    const REPLY_WAIT: Duration = Duration::from_micros(1800);
+    /// Measured turnaround on this class of rig is ~1.0–1.5 ms, so this is
+    /// tight on purpose. The achievable sample rate turns out to be bound by
+    /// the USB-serial link rather than by our pacing — frames land on a ~4 ms
+    /// quantum here — and a reply window that overruns that quantum costs a
+    /// whole extra one. Trading reply margin for cadence is the only lever
+    /// available in software; a dropped reply just costs a sample, and the
+    /// sample count printed below shows if too many are being lost.
+    const REPLY_WAIT: Duration = Duration::from_micros(1100);
     const WINDOW: Duration = Duration::from_millis(250);
 
     let target: i16 = std::env::var("M0601_TEST_RPM")
