@@ -59,6 +59,20 @@ fn open() -> M0601 {
     M0601::open(&port(), motor_id(), TIMEOUT).expect("open serial port")
 }
 
+/// Setpoint for the motion captures; override with `M0601_TEST_RPM`.
+/// Bounded so a typo cannot command something wild.
+fn test_rpm() -> i16 {
+    let target: i16 = std::env::var("M0601_TEST_RPM")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(120);
+    assert!(
+        (20..=330).contains(&target),
+        "M0601_TEST_RPM must be 20..=330, got {target}"
+    );
+    target
+}
+
 #[test]
 #[ignore = "needs hardware: set M0601_PORT"]
 fn scan_finds_motor() {
@@ -208,13 +222,13 @@ fn spin_and_stop() {
 /// No vendor source states the direction. The upstream DDT manual gives only
 /// a unit, `RPM/0.1ms`, a *rate*, under which a larger byte ramps *harder*;
 /// the DFRobot wiki contradicts that unit within the same sentence. This
-/// crate stopped guessing and set every default to `0`. This capture settles
-/// it on hardware, the way `reply_checksum_capture` settled the reply CRC.
+/// capture settles it on hardware, the way `reply_checksum_capture` settled
+/// the reply CRC.
 ///
 /// For each accel byte it commands a step from rest to `M0601_TEST_RPM`
 /// (default 120) and reports **time to 90% of setpoint** and **peak current**
 /// during the ramp. Both matter: the first gives the direction, the second is
-/// the quantity the 3 A bus-overcurrent argument actually rests on.
+/// the quantity the old 3 A bus-overcurrent worry rested on.
 ///
 /// ```sh
 /// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
@@ -249,14 +263,7 @@ fn accel_direction_capture() {
     /// ramp, not just its first 90%.
     const HOLD_PAST_CROSSING: Duration = Duration::from_millis(300);
 
-    let target: i16 = std::env::var("M0601_TEST_RPM")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(120);
-    assert!(
-        (20..=330).contains(&target),
-        "M0601_TEST_RPM must be 20..=330, got {target}"
-    );
+    let target = test_rpm();
     let reached = f32::from(target) * 0.9;
 
     let mut guard = StopOnDrop(Some(open()));
@@ -270,7 +277,7 @@ fn accel_direction_capture() {
     );
     eprintln!(
         "{:>5}  {:>12}  {:>11}  {:>10}  {:>8}",
-        "accel", "t to 90%", "peak RPM", "peak A", "samples"
+        "accel", "t to 90%", "peak RPM", "peak |A|", "samples"
     );
 
     let mut results: Vec<(u8, Option<Duration>, i16, f32)> = Vec::new();
@@ -354,12 +361,13 @@ fn accel_direction_capture() {
     match (timed.first(), timed.last()) {
         (Some(&(lo_accel, lo_t)), Some(&(hi_accel, hi_t))) if lo_accel != hi_accel => {
             let verdict = if hi_t > lo_t {
-                "LARGER IS GENTLER — the direction the docs used to claim, by luck. \
-                 The upstream RPM/0.1ms rate unit is not literal."
+                "LARGER IS GENTLER — the direction this crate's docs originally \
+                 claimed (correctly, though no published source states it). The \
+                 upstream RPM/0.1ms rate unit is not literal."
             } else {
                 "LARGER IS HARSHER — the upstream rate unit is literal, and the \
-                 defaults this crate removed (stop_accel 5, control 3, quad 5) were \
-                 backwards."
+                 shipped defaults (stop_accel 5, control 3, quad 5) sit on the \
+                 harsh end. Re-examine them before trusting any of them."
             };
             eprintln!(
                 "VERDICT: accel {lo_accel} reached 90% in {:.0} ms, accel {hi_accel} \
@@ -469,14 +477,7 @@ fn stop_ramp_capture() {
     /// the same place. The fastest ramp, to keep the spin-up short.
     const SPINUP_ACCEL: u8 = 1;
 
-    let target: i16 = std::env::var("M0601_TEST_RPM")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(120);
-    assert!(
-        (20..=330).contains(&target),
-        "M0601_TEST_RPM must be 20..=330, got {target}"
-    );
+    let target = test_rpm();
 
     let mut guard = StopOnDrop(Some(open()));
     let m = guard.0.as_mut().expect("just constructed");
@@ -489,7 +490,7 @@ fn stop_ramp_capture() {
     );
     eprintln!(
         "{:>22}  {:>14}  {:>10}  {:>13}  {:>8}",
-        "stop style", "RPM @ handover", "shed", "time to rest", "peak A"
+        "stop style", "RPM @ handover", "shed", "time to rest", "peak |A|"
     );
 
     let mut results: Vec<(StopStyle, Option<i16>, Option<Duration>)> = Vec::new();
@@ -530,9 +531,9 @@ fn stop_ramp_capture() {
         let start = Instant::now();
         let mut at_handover: Option<i16> = None;
         let mut time_to_rest: Option<Duration> = None;
-        // Peak current during the stop: the 3 A trip is the whole reason the
-        // stop ramp is said to need softening, so measure it rather than
-        // reasoning about it.
+        // Peak current during the stop: the 3 A trip was the stated reason the
+        // stop ramp needed softening, so measure it rather than reasoning
+        // about it.
         let mut peak_a: f32 = 0.0;
 
         while start.elapsed() < STOP_CAP {
@@ -687,10 +688,7 @@ fn stop_ramp_curve_capture() {
     const REPLY_WAIT: Duration = Duration::from_millis(4);
     const CURVE_LEN: Duration = Duration::from_millis(400);
 
-    let target: i16 = std::env::var("M0601_TEST_RPM")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(120);
+    let target = test_rpm();
 
     let mut guard = StopOnDrop(Some(open()));
     let m = guard.0.as_mut().expect("just constructed");
@@ -752,24 +750,58 @@ fn stop_ramp_curve_capture() {
     m.safe_stop();
 
     let (a, b) = (&curves[0], &curves[1]);
+    // An empty or threadbare curve must never read as agreement: a `worst` of
+    // zero over zero comparisons would print CONFIRMED from no data, and
+    // dropped replies are a real failure mode on this link (a reply window
+    // near 1 ms loses every sample).
+    const MIN_SAMPLES: usize = 20;
+    assert!(
+        a.len() >= MIN_SAMPLES && b.len() >= MIN_SAMPLES,
+        "too few samples to audit anything (accel {}: {}, accel {}: {}) — \
+         were the replies dropped?",
+        PROBES[0],
+        a.len(),
+        PROBES[1],
+        b.len()
+    );
     eprintln!(
-        "\n{:>8}  {:>18}  {:>18}  {:>6}",
-        "sample",
+        "\n{:>13}  {:>18}  {:>18}  {:>6}",
+        "t (a / b)",
         format!("accel {} (rpm/A)", PROBES[0]),
         format!("accel {} (rpm/A)", PROBES[1]),
         "delta"
     );
+    // Pair samples by elapsed time, not by index: one dropped reply would
+    // shift every later index by a full sample period and silently compare
+    // different instants. Each accel-`a` sample is read against the accel-`b`
+    // sample nearest in time, and pairs further apart than half a sample
+    // period are skipped rather than compared.
     let mut worst: i16 = 0;
-    for i in 0..a.len().min(b.len()) {
-        let d = (a[i].1 - b[i].1).abs();
+    let mut paired: usize = 0;
+    let mut j = 0usize;
+    for &(t_a, rpm_a, amp_a) in a {
+        while j + 1 < b.len() && b[j + 1].0.abs_diff(t_a) < b[j].0.abs_diff(t_a) {
+            j += 1;
+        }
+        let (t_b, rpm_b, amp_b) = b[j];
+        if t_b.abs_diff(t_a) > 5 {
+            continue;
+        }
+        paired += 1;
+        let d = (rpm_a - rpm_b).abs();
         worst = worst.max(d);
         eprintln!(
-            "{:>5} ms  {:>11} / {:>4.2}  {:>11} / {:>4.2}  {:>6}",
-            a[i].0, a[i].1, a[i].2, b[i].1, b[i].2, d
+            "{t_a:>5}/{t_b:<5} ms  {rpm_a:>11} / {amp_a:>4.2}  {rpm_b:>11} / {amp_b:>4.2}  {d:>6}"
         );
     }
+    assert!(
+        paired >= MIN_SAMPLES,
+        "only {paired} time-aligned sample pairs — the two runs' cadences \
+         diverged too far to audit"
+    );
     eprintln!(
-        "\nWorst per-sample divergence between accel {} and accel {}: {worst} RPM.",
+        "\nWorst divergence between accel {} and accel {} across {paired} \
+         time-aligned pairs: {worst} RPM.",
         PROBES[0], PROBES[1]
     );
     eprintln!(
@@ -827,10 +859,10 @@ fn winding_temp(m: &mut M0601) -> Option<u8> {
 /// This answers the question that actually affects code — **is the reported
 /// current field blind while the motor brakes?** — because `m0601-quad` trips
 /// its vehicle-wide stop off that field (`limits.current_trip_a`), and a field
-/// that reads ~0 during braking is a hole in that monitor. It also settles
-/// whether a velocity-0 stop can trip the 3 A **bus** protection at all: if
-/// the energy never crosses the bus, it structurally cannot, and the separate
-/// 4.6 A **phase** overcurrent bit is the only thing that could fire.
+/// that reads ~0 during braking is a hole in that monitor. It does **not**
+/// settle what crosses the bus: [`braking_current_fast_capture`] shows this
+/// link aliases events shorter than a few milliseconds, so these samples speak
+/// to what the field *reports*, never to what the hardware is doing.
 ///
 /// Part A logs signed current and fault bits through steady running, a
 /// velocity-0 stop, and a brake stop. Part B is a thermal probe: equal numbers
@@ -865,32 +897,42 @@ fn braking_current_capture() {
     const COAST_CAP: Duration = Duration::from_millis(8000);
     const REST_RPM: i16 = 5;
 
-    let target: i16 = std::env::var("M0601_TEST_RPM")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(120);
+    let target = test_rpm();
 
     let mut guard = StopOnDrop(Some(open()));
     let m = guard.0.as_mut().expect("just constructed");
     m.set_mode(Mode::Velocity).expect("set velocity mode");
 
     // ── Part A: signed current and faults through each phase ─────────────
-    eprintln!("\n== Part A: signed current through each phase ==\n");
+    eprintln!("\n== Part A: signed current through each phase (steady = {target} RPM) ==\n");
 
+    /// The three phases to sample. An enum rather than label strings, so the
+    /// frame selection cannot silently diverge from what the row is called.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Phase {
+        Steady,
+        Vel0,
+        Brake,
+    }
     // One entry per phase: its label and its telemetry samples.
     let mut phases: Vec<(&str, Vec<Sample>)> = Vec::new();
 
-    for phase in ["steady 120 RPM", "velocity-0 stop", "brake stop"] {
+    for phase in [Phase::Steady, Phase::Vel0, Phase::Brake] {
+        let label = match phase {
+            Phase::Steady => "steady",
+            Phase::Vel0 => "velocity-0",
+            Phase::Brake => "brake",
+        };
         assert!(
             spin_up_to(m, target, HOLD),
-            "wheel never reached speed before the {phase} phase"
+            "wheel never reached speed before the {label} phase"
         );
         let frame = match phase {
-            "steady 120 RPM" => m0601::protocol::frame_velocity(m.id(), target, 1),
-            "brake stop" => m0601::protocol::frame_brake(m.id()),
-            _ => m0601::protocol::frame_velocity(m.id(), 0, 5),
+            Phase::Steady => m0601::protocol::frame_velocity(m.id(), target, 1),
+            Phase::Vel0 => m0601::protocol::frame_velocity(m.id(), 0, 5),
+            Phase::Brake => m0601::protocol::frame_brake(m.id()),
         };
-        let window = if phase == "steady 120 RPM" {
+        let window = if phase == Phase::Steady {
             Duration::from_millis(200)
         } else {
             Duration::from_millis(600)
@@ -907,20 +949,13 @@ fn braking_current_capture() {
                     fb.current_a,
                     fb.faults.0,
                 ));
-                if phase != "steady 120 RPM" && fb.speed_rpm.abs() < REST_RPM {
+                if phase != Phase::Steady && fb.speed_rpm.abs() < REST_RPM {
                     break;
                 }
             }
             std::thread::sleep(SAMPLE_GAP);
         }
-        phases.push((
-            match phase {
-                "steady 120 RPM" => "steady",
-                "brake stop" => "brake",
-                _ => "velocity-0",
-            },
-            samples,
-        ));
+        phases.push((label, samples));
         m.safe_stop();
         std::thread::sleep(Duration::from_millis(700));
     }
@@ -965,14 +1000,19 @@ fn braking_current_capture() {
     // heats the motor, the braked trial should end hotter.
     eprintln!("\n== Part B: thermal probe ({CYCLES} cycles each) ==\n");
 
-    let thermal = |m: &mut M0601, braked: bool| -> (Option<u8>, Option<u8>, f64) {
+    let thermal = |m: &mut M0601, braked: bool| -> (Option<u8>, Option<u8>, f64, usize) {
         let before = winding_temp(m);
         let t0 = Instant::now();
+        // Completed cycles are counted and reported: a failed spin-up shortens
+        // a trial, and unequal cycle counts would break the "same number of
+        // spin-ups" control the comparison rests on.
+        let mut completed = 0usize;
         for _ in 0..CYCLES {
             m.set_mode(Mode::Velocity).ok();
             if !spin_up_to(m, target, Duration::from_millis(150)) {
                 break;
             }
+            completed += 1;
             if braked {
                 let zero = m0601::protocol::frame_velocity(m.id(), 0, 5);
                 let start = Instant::now();
@@ -1000,12 +1040,12 @@ fn braking_current_capture() {
         }
         let elapsed = t0.elapsed().as_secs_f64();
         std::thread::sleep(Duration::from_millis(500));
-        (before, winding_temp(m), elapsed)
+        (before, winding_temp(m), elapsed, completed)
     };
 
-    let (b0, b1, b_secs) = thermal(m, true);
+    let (b0, b1, b_secs, b_cycles) = thermal(m, true);
     eprintln!(
-        "braked  : {} -> {} °C over {b_secs:.0} s",
+        "braked  : {} -> {} °C over {b_secs:.0} s ({b_cycles}/{CYCLES} cycles)",
         b0.map_or("?".into(), |t| t.to_string()),
         b1.map_or("?".into(), |t| t.to_string()),
     );
@@ -1015,12 +1055,18 @@ fn braking_current_capture() {
     eprintln!("cooling 90 s…");
     std::thread::sleep(Duration::from_secs(90));
 
-    let (c0, c1, c_secs) = thermal(m, false);
+    let (c0, c1, c_secs, c_cycles) = thermal(m, false);
     eprintln!(
-        "coasting: {} -> {} °C over {c_secs:.0} s",
+        "coasting: {} -> {} °C over {c_secs:.0} s ({c_cycles}/{CYCLES} cycles)",
         c0.map_or("?".into(), |t| t.to_string()),
         c1.map_or("?".into(), |t| t.to_string()),
     );
+    if b_cycles != c_cycles {
+        eprintln!(
+            "    ! trials completed UNEQUAL cycle counts ({b_cycles} vs {c_cycles}) — \
+             the equal-spin-ups control does not hold for this run."
+        );
+    }
 
     m.safe_stop();
 
@@ -1037,8 +1083,9 @@ fn braking_current_capture() {
             eprintln!(
                 "    YES: the wheel sheds most of its speed while the reported current \
                  stays under {max_mag:.2} A. A monitor watching this field cannot see a \
-                 velocity-0 stop, and such a stop cannot trip the 3 A BUS protection — \
-                 the 4.6 A PHASE bit would be the only visible signal."
+                 velocity-0 stop. What crosses the BUS is NOT settled by this — the \
+                 link aliases short transients (see braking_current_fast_capture), so \
+                 this is a claim about the telemetry, not about the hardware."
             );
         } else {
             eprintln!(
@@ -1104,11 +1151,12 @@ fn braking_current_capture() {
 /// the achieved cadence alongside the curve, so the reading can be judged
 /// against the rate it was taken at.
 ///
-/// It matters because the docs claim a velocity-0 stop cannot trip the 3 A
-/// *bus* protection "since almost nothing crosses the bus". That claim rests
-/// on the mean being real. (The separate finding — that a current *monitor*
-/// cannot see a velocity-0 stop — holds either way, and more strongly if the
-/// waveform is spiky, since `m0601-quad` polls each wheel only every ~144 ms.)
+/// It matters because an earlier draft of the docs claimed a velocity-0 stop
+/// cannot trip the 3 A *bus* protection "since almost nothing crosses the
+/// bus". That claim rested on the mean being real, and this capture is why it
+/// was retracted. (The separate finding — that a current *monitor* cannot see
+/// a velocity-0 stop — holds either way, and more strongly if the waveform is
+/// spiky, since `m0601-quad` polls each wheel only every ~144 ms.)
 ///
 /// ```sh
 /// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
@@ -1147,10 +1195,7 @@ fn braking_current_fast_capture() {
     const REPLY_WAIT: Duration = Duration::from_micros(1800);
     const WINDOW: Duration = Duration::from_millis(250);
 
-    let target: i16 = std::env::var("M0601_TEST_RPM")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(120);
+    let target = test_rpm();
     let id = motor_id();
 
     let bus = m0601::Bus::open(&port(), TIMEOUT)
@@ -1166,12 +1211,12 @@ fn braking_current_fast_capture() {
         REPLY_WAIT.as_micros()
     );
 
-    for (label, braking) in [("velocity-0", true), ("brake", false)] {
+    for (label, ramp_stop) in [("velocity-0", true), ("brake", false)] {
         assert!(
             spin_up_to(m, target, Duration::from_millis(400)),
             "wheel never reached speed before the {label} phase"
         );
-        let frame = if braking {
+        let frame = if ramp_stop {
             m0601::protocol::frame_velocity(m.id(), 0, 5)
         } else {
             m0601::protocol::frame_brake(m.id())
