@@ -384,3 +384,245 @@ fn accel_direction_capture() {
          (contradiction 6) and close issue #2.\n"
     );
 }
+
+/// How a stop trial asks the wheel to slow down.
+#[derive(Clone, Copy)]
+enum StopStyle {
+    /// Send no drive frames at all — the wheel coasts, as it does when a
+    /// controller dies. The control every other row is read against: a
+    /// deceleration no faster than this one is doing nothing.
+    Coast,
+    /// The electric brake byte, the final phase of `safe_stop`.
+    Brake,
+    /// Velocity-0 drive frames at this accel byte — the ramp phase of
+    /// `safe_stop`, which uses `BusTiming::stop_accel` (default 5).
+    Ramp(u8),
+}
+
+impl StopStyle {
+    fn label(self) -> String {
+        match self {
+            Self::Coast => "coast (no frames)".to_string(),
+            Self::Brake => "brake".to_string(),
+            Self::Ramp(a) => format!("velocity-0 @ accel {a}"),
+        }
+    }
+}
+
+/// What `safe_stop`'s ramp phase actually accomplishes before the brake takes
+/// over — the follow-up question from `accel_direction_capture`.
+///
+/// `safe_stop` sends five velocity-0 rounds 20 ms apart (100 ms) at
+/// `BusTiming::stop_accel`, then five brake rounds. Since the accel byte
+/// measured at ~3.6 ms per RPM per unit on spin-*up*, a stop at accel `5`
+/// would shed only a few RPM in that 100 ms window — meaning the brake does
+/// nearly all the work and the ramp's documented role is largely notional.
+/// Spin-up and spin-down need not behave alike, though, so this measures the
+/// deceleration directly.
+///
+/// Each trial spins the wheel up to `M0601_TEST_RPM` (default 120), then
+/// applies one stop style and reports the speed still present at the 100 ms
+/// handover point plus the total time to rest. `Coast` is the control.
+///
+/// ```sh
+/// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
+///   cargo test -p m0601 --test hardware -- --ignored --nocapture stop_ramp_capture
+/// ```
+///
+/// **Spins the wheel, repeatedly. Get it off the ground first.**
+#[test]
+#[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
+fn stop_ramp_capture() {
+    let _guard = port_guard();
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "stop_ramp_capture spins the wheel; set M0601_ALLOW_MOTION=1 to allow it \
+         (make sure the wheel is off the ground)"
+    );
+
+    /// The stop styles to compare, control first.
+    const TRIALS: [StopStyle; 6] = [
+        StopStyle::Coast,
+        StopStyle::Brake,
+        StopStyle::Ramp(0),
+        StopStyle::Ramp(1),
+        StopStyle::Ramp(5),
+        StopStyle::Ramp(20),
+    ];
+    /// `safe_stop` gives the ramp five rounds 20 ms apart before the brake
+    /// rounds begin. Whatever speed is left at this instant is what the brake
+    /// inherits — the number this whole capture exists to find.
+    const HANDOVER: Duration = Duration::from_millis(100);
+    /// Below this the wheel counts as stopped.
+    const REST_RPM: i16 = 5;
+    /// Give up on a stop that will not arrive.
+    const STOP_CAP: Duration = Duration::from_millis(6000);
+    const SAMPLE_GAP: Duration = Duration::from_millis(5);
+    const REPLY_WAIT: Duration = Duration::from_millis(4);
+    /// Accel for the spin-*up* before each trial, so every trial starts from
+    /// the same place. The fastest ramp, to keep the spin-up short.
+    const SPINUP_ACCEL: u8 = 1;
+
+    let target: i16 = std::env::var("M0601_TEST_RPM")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(120);
+    assert!(
+        (20..=330).contains(&target),
+        "M0601_TEST_RPM must be 20..=330, got {target}"
+    );
+
+    let mut guard = StopOnDrop(Some(open()));
+    let m = guard.0.as_mut().expect("just constructed");
+    m.set_mode(Mode::Velocity).expect("set velocity mode");
+
+    eprintln!(
+        "\nstop ramp capture: spin up to {target} RPM, then stop. Handover at \
+         {} ms is where safe_stop switches from the ramp to the brake.\n",
+        HANDOVER.as_millis()
+    );
+    eprintln!(
+        "{:>22}  {:>14}  {:>10}  {:>13}",
+        "stop style", "RPM @ handover", "shed", "time to rest"
+    );
+
+    let mut results: Vec<(StopStyle, Option<i16>, Option<Duration>)> = Vec::new();
+
+    for style in TRIALS {
+        // ── spin up ──────────────────────────────────────────────────────
+        m.set_mode(Mode::Velocity).expect("set velocity mode");
+        let up = m0601::protocol::frame_velocity(m.id(), target, SPINUP_ACCEL);
+        let want = f32::from(target) * 0.9;
+        let spin_deadline = Instant::now() + Duration::from_millis(2500);
+        let mut at_speed: Option<Instant> = None;
+        while Instant::now() < spin_deadline {
+            if let Ok(Some(fb)) = m.transact(&up, REPLY_WAIT)
+                && at_speed.is_none()
+                && f32::from(fb.speed_rpm) >= want
+            {
+                at_speed = Some(Instant::now());
+            }
+            // Hold briefly at speed so every trial decelerates from a settled
+            // wheel rather than from one still accelerating.
+            if at_speed.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
+                break;
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+        assert!(
+            at_speed.is_some(),
+            "wheel never reached {want:.0} RPM before the {} trial",
+            style.label()
+        );
+
+        // ── stop ─────────────────────────────────────────────────────────
+        let stop_frame = match style {
+            StopStyle::Coast => None,
+            StopStyle::Brake => Some(m0601::protocol::frame_brake(m.id())),
+            StopStyle::Ramp(a) => Some(m0601::protocol::frame_velocity(m.id(), 0, a)),
+        };
+        let start = Instant::now();
+        let mut at_handover: Option<i16> = None;
+        let mut time_to_rest: Option<Duration> = None;
+
+        while start.elapsed() < STOP_CAP {
+            // Coast sends a feedback query, which commands no motion — the
+            // wheel is slowing because nothing is driving it.
+            let sample = match &stop_frame {
+                Some(f) => m.transact(f, REPLY_WAIT),
+                None => m.query_with(REPLY_WAIT),
+            };
+            if let Ok(Some(fb)) = sample {
+                let elapsed = start.elapsed();
+                if at_handover.is_none() && elapsed >= HANDOVER {
+                    at_handover = Some(fb.speed_rpm.abs());
+                }
+                if fb.speed_rpm.abs() < REST_RPM {
+                    time_to_rest = Some(elapsed);
+                    break;
+                }
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+
+        eprintln!(
+            "{:>22}  {:>14}  {:>10}  {:>13}",
+            style.label(),
+            at_handover.map_or_else(|| "-".to_string(), |r| format!("{r} RPM")),
+            at_handover.map_or_else(
+                || "-".to_string(),
+                |r| format!("{}%", (i32::from(target - r) * 100) / i32::from(target))
+            ),
+            time_to_rest.map_or_else(
+                || format!(">{:.1} s", STOP_CAP.as_secs_f64()),
+                |t| format!("{:.0} ms", t.as_secs_f64() * 1000.0)
+            ),
+        );
+        results.push((style, at_handover, time_to_rest));
+
+        // Leave the wheel genuinely stopped between trials whatever the style
+        // under test did, and let the brake release before the next spin-up.
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(700));
+    }
+
+    m.safe_stop();
+
+    // ── Verdict ──────────────────────────────────────────────────────────
+    let find = |want: &str| {
+        results
+            .iter()
+            .find(|(s, ..)| s.label() == want)
+            .and_then(|(_, h, t)| h.map(|h| (h, *t)))
+    };
+    eprintln!();
+    match (find("coast (no frames)"), find("velocity-0 @ accel 5")) {
+        (Some((coast_h, coast_t)), Some((ramp_h, ramp_t))) => {
+            eprintln!(
+                "At the {} ms handover: coasting leaves {coast_h} RPM, the default stop \
+                 ramp (accel 5) leaves {ramp_h} RPM.",
+                HANDOVER.as_millis()
+            );
+            let shed = f32::from(coast_h - ramp_h) / f32::from(target) * 100.0;
+            if ramp_h >= coast_h {
+                eprintln!(
+                    "VERDICT: the stop ramp is doing NOTHING the wheel would not do on \
+                     its own — the brake delivers the entire stop, and stop_accel is \
+                     decoration. The docs overstate the ramp's role."
+                );
+            } else if shed < 10.0 {
+                eprintln!(
+                    "VERDICT: the stop ramp sheds only {shed:.0}% more than coasting \
+                     before the brake takes over. It is doing real but MINOR work; the \
+                     brake delivers most of the stop, and the docs overstate the ramp."
+                );
+            } else {
+                eprintln!(
+                    "VERDICT: the stop ramp sheds {shed:.0}% more than coasting before \
+                     the brake takes over — it is doing substantial work, and the \
+                     documented role of stop_accel stands."
+                );
+            }
+            eprintln!(
+                "Time to rest: coast {}, ramp@5 {}.",
+                coast_t.map_or_else(
+                    || "never".into(),
+                    |t| format!("{:.0} ms", t.as_secs_f64() * 1000.0)
+                ),
+                ramp_t.map_or_else(
+                    || "never".into(),
+                    |t| format!("{:.0} ms", t.as_secs_f64() * 1000.0)
+                ),
+            );
+        }
+        _ => eprintln!(
+            "VERDICT: inconclusive — the coast or accel-5 trial produced no handover sample."
+        ),
+    }
+    eprintln!(
+        "\nIf the ramp is doing little, the honest fix is to say so in \
+         concepts/stopping-safely.md and in the SAFE_STOP_ACCEL docs rather than \
+         to keep implying a controlled deceleration.\n"
+    );
+}
