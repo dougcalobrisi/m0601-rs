@@ -441,14 +441,19 @@ fn stop_ramp_capture() {
          (make sure the wheel is off the ground)"
     );
 
-    /// The stop styles to compare, control first.
-    const TRIALS: [StopStyle; 6] = [
+    /// The stop styles to compare, control first. The ramp values span the
+    /// whole byte deliberately: on spin-*up* accel 255 is ~250x gentler than
+    /// accel 1, so if deceleration honours the byte at all, these two rows
+    /// cannot possibly match.
+    const TRIALS: [StopStyle; 8] = [
         StopStyle::Coast,
         StopStyle::Brake,
         StopStyle::Ramp(0),
         StopStyle::Ramp(1),
         StopStyle::Ramp(5),
         StopStyle::Ramp(20),
+        StopStyle::Ramp(100),
+        StopStyle::Ramp(255),
     ];
     /// `safe_stop` gives the ramp five rounds 20 ms apart before the brake
     /// rounds begin. Whatever speed is left at this instant is what the brake
@@ -483,8 +488,8 @@ fn stop_ramp_capture() {
         HANDOVER.as_millis()
     );
     eprintln!(
-        "{:>22}  {:>14}  {:>10}  {:>13}",
-        "stop style", "RPM @ handover", "shed", "time to rest"
+        "{:>22}  {:>14}  {:>10}  {:>13}  {:>8}",
+        "stop style", "RPM @ handover", "shed", "time to rest", "peak A"
     );
 
     let mut results: Vec<(StopStyle, Option<i16>, Option<Duration>)> = Vec::new();
@@ -525,6 +530,10 @@ fn stop_ramp_capture() {
         let start = Instant::now();
         let mut at_handover: Option<i16> = None;
         let mut time_to_rest: Option<Duration> = None;
+        // Peak current during the stop: the 3 A trip is the whole reason the
+        // stop ramp is said to need softening, so measure it rather than
+        // reasoning about it.
+        let mut peak_a: f32 = 0.0;
 
         while start.elapsed() < STOP_CAP {
             // Coast sends a feedback query, which commands no motion — the
@@ -535,6 +544,7 @@ fn stop_ramp_capture() {
             };
             if let Ok(Some(fb)) = sample {
                 let elapsed = start.elapsed();
+                peak_a = peak_a.max(fb.current_a.abs());
                 if at_handover.is_none() && elapsed >= HANDOVER {
                     at_handover = Some(fb.speed_rpm.abs());
                 }
@@ -547,7 +557,7 @@ fn stop_ramp_capture() {
         }
 
         eprintln!(
-            "{:>22}  {:>14}  {:>10}  {:>13}",
+            "{:>22}  {:>14}  {:>10}  {:>13}  {peak_a:>8.2}",
             style.label(),
             at_handover.map_or_else(|| "-".to_string(), |r| format!("{r} RPM")),
             at_handover.map_or_else(
@@ -570,59 +580,74 @@ fn stop_ramp_capture() {
     m.safe_stop();
 
     // ── Verdict ──────────────────────────────────────────────────────────
-    let find = |want: &str| {
+    //
+    // Two separate questions, and conflating them is easy:
+    //   1. Do velocity-0 frames decelerate at all? (ramp vs COAST)
+    //   2. Does `stop_accel` change that deceleration? (ramp vs ramp)
+    // Only (2) is what the `stop_accel` knob claims to do.
+    let handover_of = |want: &str| {
         results
             .iter()
             .find(|(s, ..)| s.label() == want)
-            .and_then(|(_, h, t)| h.map(|h| (h, *t)))
+            .and_then(|(_, h, _)| *h)
     };
+    let ramps: Vec<(u8, i16)> = results
+        .iter()
+        .filter_map(|(s, h, _)| match (s, h) {
+            (StopStyle::Ramp(a), Some(h)) => Some((*a, *h)),
+            _ => None,
+        })
+        .collect();
+
     eprintln!();
-    match (find("coast (no frames)"), find("velocity-0 @ accel 5")) {
-        (Some((coast_h, coast_t)), Some((ramp_h, ramp_t))) => {
+    if let (Some(coast), Some(brake)) = (handover_of("coast (no frames)"), handover_of("brake")) {
+        eprintln!(
+            "Q1 — do velocity-0 frames decelerate at all? Coasting leaves {coast} RPM at \
+             the handover and the brake leaves {brake} RPM."
+        );
+        match ramps.iter().map(|(_, h)| *h).min() {
+            Some(best) if best < coast - 5 => eprintln!(
+                "     YES: the ramp phase leaves {best} RPM, well under coasting. It is \
+                 real deceleration, not just the wheel losing speed on its own."
+            ),
+            Some(best) => eprintln!(
+                "     NO: the ramp phase leaves {best} RPM, no better than coasting \
+                 ({coast}). The brake delivers the entire stop."
+            ),
+            None => eprintln!("     inconclusive: no ramp trial produced a handover sample."),
+        }
+    }
+
+    if ramps.len() >= 2 {
+        let lo = ramps.iter().map(|(_, h)| *h).min().unwrap_or(0);
+        let hi = ramps.iter().map(|(_, h)| *h).max().unwrap_or(0);
+        let spread = hi - lo;
+        let listed: Vec<String> = ramps.iter().map(|(a, h)| format!("{a}->{h}")).collect();
+        eprintln!(
+            "\nQ2 — does stop_accel change the deceleration? accel->RPM at handover: {}",
+            listed.join(", ")
+        );
+        // The byte spans a ~250x range on spin-up. If deceleration honoured it
+        // even weakly, the ends could not land within a few RPM of each other.
+        if spread <= 5 {
             eprintln!(
-                "At the {} ms handover: coasting leaves {coast_h} RPM, the default stop \
-                 ramp (accel 5) leaves {ramp_h} RPM.",
-                HANDOVER.as_millis()
+                "     NO — spread is {spread} RPM across the whole byte range. The accel \
+                 byte has NO measurable effect on deceleration, even though on spin-up \
+                 the same values differ by more than 250x. stop_accel is inert on this \
+                 firmware, and any doc claiming a given value decelerates more gently \
+                 than another is wrong."
             );
-            let shed = f32::from(coast_h - ramp_h) / f32::from(target) * 100.0;
-            if ramp_h >= coast_h {
-                eprintln!(
-                    "VERDICT: the stop ramp is doing NOTHING the wheel would not do on \
-                     its own — the brake delivers the entire stop, and stop_accel is \
-                     decoration. The docs overstate the ramp's role."
-                );
-            } else if shed < 10.0 {
-                eprintln!(
-                    "VERDICT: the stop ramp sheds only {shed:.0}% more than coasting \
-                     before the brake takes over. It is doing real but MINOR work; the \
-                     brake delivers most of the stop, and the docs overstate the ramp."
-                );
-            } else {
-                eprintln!(
-                    "VERDICT: the stop ramp sheds {shed:.0}% more than coasting before \
-                     the brake takes over — it is doing substantial work, and the \
-                     documented role of stop_accel stands."
-                );
-            }
+        } else {
             eprintln!(
-                "Time to rest: coast {}, ramp@5 {}.",
-                coast_t.map_or_else(
-                    || "never".into(),
-                    |t| format!("{:.0} ms", t.as_secs_f64() * 1000.0)
-                ),
-                ramp_t.map_or_else(
-                    || "never".into(),
-                    |t| format!("{:.0} ms", t.as_secs_f64() * 1000.0)
-                ),
+                "     YES — spread is {spread} RPM across the byte range, so the value \
+                 does matter and stop_accel's documented role stands."
             );
         }
-        _ => eprintln!(
-            "VERDICT: inconclusive — the coast or accel-5 trial produced no handover sample."
-        ),
     }
+
     eprintln!(
-        "\nIf the ramp is doing little, the honest fix is to say so in \
-         concepts/stopping-safely.md and in the SAFE_STOP_ACCEL docs rather than \
-         to keep implying a controlled deceleration.\n"
+        "\nRecord this in docs/content/docs/concepts/stopping-safely.md and in the \
+         SAFE_STOP_ACCEL docs. Note the caveat: an unloaded wheel. A loaded one may \
+         draw enough current for the difference to matter.\n"
     );
 }
