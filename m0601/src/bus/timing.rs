@@ -39,12 +39,18 @@ const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// whereas the brake rounds show a −1.99 A transient followed by ~0.6–0.85 A
 /// of sustained work. Unloaded, against a 3 A trip.
 ///
-/// Two consequences. A velocity-0 stop is effectively **invisible** to any
-/// monitor watching reported current, so low current during a stop does not
-/// mean nothing is happening. And such a stop cannot plausibly trip the 3 A
-/// *bus* protection — the separate 4.6 A *phase* bit would be the only
-/// visible signal. If a stop ever trips, look at the brake, and note that
+/// The consequence that holds firmly: a velocity-0 stop is effectively
+/// **invisible** to any monitor watching reported current, so a low reading
+/// during a stop does not mean nothing is happening. If a stop ever does trip
+/// overcurrent, look at the brake — measured up to −2.28 A — and note that
 /// this byte is not the lever on it either.
+///
+/// What is *not* established is where the energy goes. Telemetry on this link
+/// cannot sample faster than ~8 ms (the limit is the USB-serial quantum, not
+/// the crate's pacing), and the brake transient is demonstrably aliased at
+/// that rate — it reads 1.99 A or 2.28 A depending on which samples land on
+/// it. So "the current telemetry reports almost nothing" is a statement about
+/// the telemetry, not proof that little crosses the bus.
 ///
 /// One unloaded motor, one firmware. Under load the numbers will differ; that
 /// the byte is inert on deceleration is the part unlikely to change.

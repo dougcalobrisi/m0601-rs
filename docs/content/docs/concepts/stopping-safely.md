@@ -31,8 +31,8 @@ unloaded wheel from 120 RPM:
 | after 100 ms of… | speed left | current while stopping |
 |---|---|---|
 | nothing (coasting) | 119 RPM | 0.39 A |
-| velocity-0 rounds | ~64 RPM | −0.63 A transient, then **0.03 A mean** |
-| brake rounds | 13 RPM | −1.99 A transient, then 0.6–0.85 A sustained |
+| velocity-0 rounds | ~64 RPM | −0.69 A transient, then **~0.04 A mean** |
+| brake rounds | 13 RPM | −2.28 A transient (~16 ms), then ~0.6–0.85 A |
 
 Two things follow, and both correct what this page used to say.
 
@@ -51,17 +51,26 @@ is braking hard and the current telemetry says essentially nothing is happening.
 brake rounds, by contrast, show a −1.99 A transient followed by 0.6–0.85 A of sustained
 work — unloaded, against a 3 A trip.
 
-Two things follow. A monitor that watches reported current — including `m0601-quad`'s
-`limits.current_trip_a` — **cannot see a velocity-0 stop at all**, so low current during
-a stop is not evidence that the wheel is idle. And a velocity-0 stop cannot plausibly
-trip the 3 A *bus* protection, since almost nothing crosses the bus; the separate 4.6 A
-*phase* bit would be the only signal available. If a stop ever does trip, suspect the
-brake — and `stop_accel` is not the lever on it either.
+What follows firmly: a monitor watching reported current — including `m0601-quad`'s
+`limits.current_trip_a` — **cannot see a velocity-0 stop at all**, so a low reading
+during a stop is not evidence that the wheel is idle. If a stop ever does trip, suspect
+the brake, and note `stop_accel` is not the lever on it either.
 
-Where the braking energy actually goes is unresolved. It is consistent with dynamic
-braking (the windings shorted, dissipating internally, invisible to a torque-current
-readout), but that is a hypothesis: a thermal probe at this scale could not resolve it,
-and phase current is not exposed by the protocol.
+**What the telemetry cannot tell you.** It is tempting to conclude that little energy
+crosses the bus during a velocity-0 stop. That is not established, and the brake proves
+why: sampled at ~9 ms it reads a 1.99 A peak, and sampled slightly differently it reads
+2.28 A across three consecutive samples. The transient is being aliased. Telemetry on
+this link cannot go faster than ~8 ms — the ceiling is the USB-serial quantum, not the
+crate's pacing, and tightening the reply window past ~1.1 ms loses the replies entirely
+— so any event shorter than a few milliseconds is invisible by construction. Read these
+rows as *what the current field reports*, which is what a monitor sees, and not as a
+measurement of what the hardware is doing.
+
+Where the braking energy actually goes therefore remains open. It is consistent with
+dynamic braking — windings shorted, dissipating internally, invisible to a torque-current
+readout — but that is a hypothesis. The protocol exposes no phase current, a thermal
+probe at this scale cannot resolve it (the braking energy is ~1% of the heat each
+spin-up dumps in the same cycle), and settling it needs a meter on the supply rail.
 
 The brake rounds still deliver the firm final hold, and they are what actually brings the
 wheel to rest: velocity-0 alone takes ~370 ms, the brake ~250 ms, and coasting more than

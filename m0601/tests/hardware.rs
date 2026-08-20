@@ -1132,14 +1132,19 @@ fn braking_current_fast_capture() {
     /// safety margin. If it is too small the replies stop parsing — which
     /// shows up as a collapsed sample count, printed below.
     const FAST_GAP: Duration = Duration::from_micros(300);
-    /// Measured turnaround on this class of rig is ~1.0–1.5 ms, so this is
-    /// tight on purpose. The achievable sample rate turns out to be bound by
-    /// the USB-serial link rather than by our pacing — frames land on a ~4 ms
-    /// quantum here — and a reply window that overruns that quantum costs a
-    /// whole extra one. Trading reply margin for cadence is the only lever
-    /// available in software; a dropped reply just costs a sample, and the
-    /// sample count printed below shows if too many are being lost.
-    const REPLY_WAIT: Duration = Duration::from_micros(1100);
+    /// 1.8 ms, and this is as fast as the link goes.
+    ///
+    /// The 300 µs bus gap above does **not** speed anything up: frames land on
+    /// a ~4 ms quantum set by the USB-serial link, not by our pacing, and the
+    /// FTDI `latency_timer` is already 1 ms. Tightening this window to 1.1 ms
+    /// to try to fit one quantum instead loses essentially every reply (0 of
+    /// ~30 samples), which also measures the motor's turnaround as **>1.1 ms**
+    /// — consistent with, and tighter than, the "~1.0–1.5 ms" in
+    /// `m0601-quad/wheels.toml`.
+    ///
+    /// So ~8–10 ms is the floor for telemetry sampling here, and events
+    /// shorter than that cannot be resolved through this link at all.
+    const REPLY_WAIT: Duration = Duration::from_micros(1800);
     const WINDOW: Duration = Duration::from_millis(250);
 
     let target: i16 = std::env::var("M0601_TEST_RPM")
@@ -1215,9 +1220,14 @@ fn braking_current_fast_capture() {
     m.safe_stop();
     eprintln!(
         "Compare against braking_current_capture at ~9 ms: velocity-0 peak 0.63 A, \
-         mean 0.03 A. If the peak and mean here are close to those, the slow sampler \
-         was not aliasing and the near-zero braking current is real. If this run finds \
-         a much larger peak, the doc claim that 'almost nothing crosses the bus' must \
-         be softened to 'reported current stays near zero'."
+         mean 0.03 A; brake peak 1.99 A, mean 0.16 A.\n\
+         \n\
+         Expect velocity-0 to reproduce (it does: ~0.69 A peak, ~0.05 A mean) and the \
+         BRAKE to come out higher (~2.28 A peak, ~0.30 A mean, several consecutive \
+         samples over 1 A). That difference is the point: the brake transient IS \
+         aliased at ~9 ms, which proves aliasing is real on this link. Velocity-0 \
+         reproducing is therefore reassuring but NOT proof — no achievable rate here \
+         can resolve a sub-4 ms event. Claims about this phase must be about what the \
+         telemetry reports, not about what crosses the bus."
     );
 }

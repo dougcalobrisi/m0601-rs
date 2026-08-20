@@ -57,15 +57,23 @@ lockstep; `m0601-quad` is a sample and is not published.
   rounds show a −1.99 A transient followed by 0.6–0.85 A sustained.
 
   So a velocity-0 stop is effectively invisible to any monitor watching reported
-  current — including `m0601-quad`'s `limits.current_trip_a` — and cannot plausibly trip
-  the 3 A *bus* protection, since almost nothing crosses the bus. Documented in
+  current — including `m0601-quad`'s `limits.current_trip_a`. Documented in
   `concepts/stopping-safely.md` and on `SAFE_STOP_ACCEL`, so low current during a stop
   is not read as an idle wheel.
+
+  Deliberately **not** claimed: that little energy crosses the bus.
+  `braking_current_fast_capture` shows the brake transient reading 1.99 A or 2.28 A
+  depending on which samples land on it, so it is being aliased — and telemetry here
+  cannot sample faster than ~8 ms, since the ceiling is the USB-serial quantum rather
+  than the crate's pacing (tightening the reply window past ~1.1 ms loses replies
+  outright, which incidentally measures motor turnaround at >1.1 ms). The figures
+  describe what the current field reports, which is what a monitor sees.
 
   The velocity-0 rounds are still worth their 100 ms: they shed nearly half the speed
   (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM). Where that
   energy goes is unresolved — consistent with dynamic braking, but the protocol does not
-  expose phase current and a thermal probe could not resolve it at this scale.
+  expose phase current, and a thermal probe cannot resolve it at this scale: the braking
+  energy is roughly 1% of the heat each spin-up dumps in the same cycle.
 
 ### Changed
 
