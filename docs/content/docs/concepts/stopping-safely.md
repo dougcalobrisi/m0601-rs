@@ -23,15 +23,37 @@ mode first, then sends zero, then brakes. Force the one mode where zero means st
 and the sequence is correct no matter what the motor was doing when things went wrong.
 
 The full sequence is five velocity-mode switch frames, then five zero-velocity frames,
-then five brake frames, 20 ms apart — about 300 ms. The ramp to zero uses a *moderate*
-acceleration by default (`5`, not the motor's fastest), so a hard step-to-zero on a
-loaded wheel can't trip the 3 A overcurrent protection part-way through the stop and
-leave it half-done; the electric brake rounds that follow still deliver the firm final
-hold. Note that `0` would be the *worst* choice here rather than a neutral one: it
-selects the motor's default, which
-[measures identical to `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources),
-the steepest ramp available. You can change the ramp — see
-[tuning the stop](#tuning-the-stop-ramp) below.
+then five brake frames, 20 ms apart — about 300 ms.
+
+Both phases were measured (`stop_ramp_capture`, `m0601/tests/hardware.rs`), stopping an
+unloaded wheel from 120 RPM:
+
+| after 100 ms of… | speed left | peak current |
+|---|---|---|
+| nothing (coasting) | 119 RPM | 0.39 A |
+| velocity-0 rounds | ~64 RPM | ~0.6 A |
+| brake rounds | 13 RPM | **2.0 A** |
+
+Two things follow, and both correct what this page used to say.
+
+**The velocity-0 rounds do real work, but the `stop_accel` byte does not.** Coasting
+sheds essentially nothing in 100 ms while the velocity-0 rounds shed nearly half the
+speed — so the ramp phase earns its place. But sweeping `stop_accel` across its entire
+range, `0` to `255`, moves that result by about 1 RPM. The full deceleration curves at
+`1` and `255` are identical sample for sample. The accel byte shapes *acceleration*
+only; on this firmware it is inert on the way down. Any advice to pick a gentler stop
+ramp — including advice this page used to give — has no effect.
+
+**The current comes from the brake, not the ramp.** The velocity-0 rounds draw well
+under an amp and fall to essentially zero once the wheel is slowing; the brake rounds
+draw ~2 A unloaded, two-thirds of the way to the 3 A trip. If a stop ever trips
+overcurrent mid-sequence, the brake is the phase to suspect, and `stop_accel` is not the
+lever on it.
+
+The brake rounds still deliver the firm final hold, and they are what actually brings the
+wheel to rest: velocity-0 alone takes ~370 ms, the brake ~250 ms, and coasting more than
+six seconds. One unloaded motor on one firmware — under load the numbers will move, but
+an inert byte is unlikely to become live.
 
 And it's best-effort: it swallows every I/O error and keeps sending, because even total
 failure is safe. If not one frame gets through, the wheel still coasts to a stop,
@@ -41,7 +63,9 @@ because the frames stopped arriving. The fail-safe is the floor under everything
 
 The stop ramp, the 20 ms round gap, and the mode/set-ID/broadcast waits are all fields
 of `BusTiming`, set once on the bus (they default to the values above, so an
-unconfigured bus behaves exactly as described):
+unconfigured bus behaves exactly as described). `stop_accel` is kept and still sent
+despite measuring inert, because one motor on one firmware is not every motor — but do
+not expect changing it to do anything:
 
 ```rust
 use m0601::{Bus, BusTiming};

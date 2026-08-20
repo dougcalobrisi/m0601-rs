@@ -194,9 +194,14 @@ impl Config {
     }
 
     /// The library [`m0601::BusTiming`] this config asks for: the enforced
-    /// idle gap plus a controlled-stop ramp that matches the configured launch
-    /// accel (`limits.accel`), so a wheel decelerates on the same ramp it
-    /// launches on. Everything else keeps the library defaults.
+    /// idle gap plus a stop ramp taken from the configured launch accel
+    /// (`limits.accel`), so the two are configured in one place.
+    ///
+    /// The stop half of that is very likely a no-op: the accel byte measures
+    /// inert on deceleration (see `m0601::BusTiming::stop_accel`). It is
+    /// wired up anyway so a rig that *does* respond to it is configured
+    /// correctly, but do not expect `limits.accel` to change how this vehicle
+    /// stops. Everything else keeps the library defaults.
     pub fn bus_timing(&self) -> m0601::BusTiming {
         m0601::BusTiming {
             min_gap: self.min_gap(),
@@ -412,7 +417,8 @@ mod tests {
         let t = cfg.bus_timing();
         assert_eq!(
             t.stop_accel, cfg.limits.accel,
-            "the stop ramp must track the configured launch accel"
+            "the stop ramp must track the configured launch accel — even though \
+             the byte measures inert on deceleration, the wiring must be right"
         );
         assert_eq!(t.min_gap, cfg.min_gap());
         // Everything else keeps the library default.

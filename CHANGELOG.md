@@ -40,6 +40,24 @@ lockstep; `m0601-quad` is a sample and is not published.
   a motor that never spun up. The useful softening range is `3`–`5`; the tutorial, FAQ,
   troubleshooting table and CLI pages now say so and give the measured timings.
 
+- **`BusTiming::stop_accel` is documented as inert.** `stop_ramp_capture`
+  (`m0601/tests/hardware.rs`) sweeps the byte across the velocity-0 rounds of a stop:
+  an unloaded wheel stopping from 120 RPM sits at 63 RPM after 100 ms at accel `0` and
+  64 RPM at accel `255`, and `stop_ramp_curve_capture` shows the full deceleration
+  curves at `1` and `255` matching sample for sample. The accel byte shapes
+  acceleration only. Docs that promised a gentler stop ramp — `SAFE_STOP_ACCEL`,
+  `Bus::with_stop_accel`, `concepts/stopping-safely.md`, the README — now say so. The
+  field is kept and still sent, since the measurement is one motor on one firmware.
+
+- **The stop's current draw is documented on the right phase.** The docs said a hard
+  velocity-0 ramp risks the 3 A bus-overcurrent trip mid-stop. Measured on an unloaded
+  wheel, the velocity-0 rounds peak at ~0.6 A and fall to ~0 A, while the *brake* rounds
+  peak at ~2.0 A (2.02 and 2.00 across two runs). If a stop trips overcurrent, the brake
+  is the phase to suspect — and `stop_accel` is not the lever on it.
+
+  The velocity-0 rounds are still worth their 100 ms: they shed nearly half the speed
+  (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM).
+
 ### Changed
 
 - Nothing in the wire format or public API. `BusTiming::stop_accel` (`5`), the `control`

@@ -147,7 +147,10 @@ Read these in the source when you build your own multi-motor loop:
   then stop guard), and SIGINT/SIGTERM/SIGHUP. On `SIGKILL` all four coast — which is
   documented in the crate, because a coasting rover *rolls*.
 - **`BusTiming` filled from config.** `Config::bus_timing()` feeds `limits.accel`
-  into `stop_accel`, so a wheel decelerates on the same ramp it launched on.
+  into `stop_accel`, so both are configured in one place — though the stop half is
+  very likely a no-op, since the accel byte
+  [measures inert on deceleration]({{< relref "../concepts/stopping-safely" >}}). It
+  is wired up so a rig that does respond is configured correctly.
 - **Latched faults with manual re-arm** (`safety.rs`), plus staleness tiers: one
   missed poll is expected, `stale_ms` warns, `dead_ms` stops the vehicle — because
   three driving wheels and one unknown wheel yaws the machine.

@@ -315,6 +315,15 @@ or SKU; the **ordering** is the durable result. Practical consequence: the gentl
 arrives fast. `3`–`5` is a useful softening, while `20` and above are so slow they read
 as a fault — at `20` the wheel had reached only 41 RPM after three seconds.
 
+**The byte applies to acceleration only.** A companion capture (`stop_ramp_capture`)
+swept it across the velocity-0 rounds of a stop and found no effect at all: an unloaded
+wheel stopping from 120 RPM sits at 63 RPM after 100 ms at accel `0` and 64 RPM at accel
+`255`, and the full deceleration curves at `1` and `255` match sample for sample. The
+same two values differ by more than 250x on the way up. Nothing in any source says the
+field is one-directional, and the name "acceleration" turns out to be exact. This is why
+`BusTiming::stop_accel` is documented as inert — see
+[Stopping safely]({{< relref "concepts/stopping-safely" >}}).
+
 What each source actually says, for the record. The **upstream DDT manual**
 (`M0601C_111 Motor Driver Instructions`,
 [PDF](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf),

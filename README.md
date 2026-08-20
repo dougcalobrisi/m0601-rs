@@ -185,9 +185,10 @@ requested one if the two ever disagree.
 Safety: the wheel is stopped on every exit path — quit keys, panics,
 SIGINT/SIGTERM/SIGHUP (e.g. a dropped SSH session). `safe_stop` sends 5×
 mode-switch-to-velocity, then 5× velocity-0, then 5× brake, ~300 ms in all;
-the ramp to zero uses a moderate acceleration by default (`5`, tunable via
-`Bus::with_stop_accel` / `BusTiming`) so a hard step can't trip the
-overcurrent protection mid-stop, and the brake rounds still hold it firmly.
+the velocity-0 rounds shed nearly half the speed (measured: 120 → ~64 RPM on
+an unloaded wheel, against 119 RPM for coasting) and the brake rounds finish
+the job. The `stop_accel` byte is tunable via `Bus::with_stop_accel` /
+`BusTiming` but measures inert — `0` and `255` decelerate identically.
 On SIGKILL or power loss the polling simply stops and the motor coasts, per
 protocol. Keep the wheel clear before spinning it.
 
