@@ -308,7 +308,12 @@ Two runs agreed to within 10 ms. Three things fall out:
    example and MotorLink's `0.1ms/rpm`. It is **not** the `RPM/0.1ms` **rate** that both
    the wiki's own unit line and the upstream DDT manual state; read literally that rate
    would make larger values harsher, which is backwards. The magnitude is off too: the
-   wiki's "1 ms each 1 rpm" at accel `1` measures ~3.6 ms per rpm here.
+   wiki's "1 ms each 1 rpm" at accel `1` measures ~3.6 ms per rpm here. "Linear" is the
+   measured *shape*, not an inference from the summary times: the full spin-up curves at
+   accel `5` and `20` (`accel_curve_capture`, two runs) are straight lines to setpoint —
+   quartile-span ratio 0.98–1.02 where a first-order lag would give 1.71, deviation from
+   the chord under 0.5% of setpoint, and the same 3.5–3.6 ms/RPM/unit slope at both
+   values.
 
 The measured constant is one unloaded motor on one rig and may vary with load, firmware
 or SKU; the **ordering** is the durable result. Practical consequence: the gentle end

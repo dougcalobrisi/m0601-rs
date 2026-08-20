@@ -147,7 +147,10 @@ fn frame(id: u8, cmd: u8, data: [u8; 7]) -> Frame {
 /// wiki's worked example, not of the `RPM/0.1ms` **rate** its own unit line
 /// and the upstream manual give. Read literally that rate would make larger
 /// values harsher; it does the opposite. `0` and `1` are indistinguishable,
-/// confirming the wiki's "the default value as 1".
+/// confirming the wiki's "the default value as 1". The ramp's *shape* is
+/// verified too (`accel_curve_capture`): the full spin-up curve is a straight
+/// line to setpoint, not an exponential approach, so "linear" is measured
+/// rather than inferred from summary times.
 ///
 /// The magnitude is one unloaded motor on one rig; the ordering is the durable
 /// part. Large values are gentler than they look useful: at `20` the same step
