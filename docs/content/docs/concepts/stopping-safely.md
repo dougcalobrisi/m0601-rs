@@ -23,17 +23,15 @@ mode first, then sends zero, then brakes. Force the one mode where zero means st
 and the sequence is correct no matter what the motor was doing when things went wrong.
 
 The full sequence is five velocity-mode switch frames, then five zero-velocity frames,
-then five brake frames, 20 ms apart — about 300 ms. The ramp to zero asks for the
-motor's *own default* acceleration (`0`). A hard step-to-zero on a loaded wheel can trip
-the 3 A overcurrent protection part-way through the stop and leave it half-done, so the
-temptation is to pick a gentler byte — but **no vendor source states which end of that
-byte's range is gentle**
-([details]({{< relref "../protocol" >}}#known-contradictions-between-sources)), and this
-default was `5` on an assumption the upstream unit contradicts. A stop is the wrong
-place for a guess that might be backwards, so it defers to the motor, and the electric
-brake rounds that follow still deliver the firm final hold. You can change that ramp
-once you have measured the direction — see [tuning the stop](#tuning-the-stop-ramp)
-below.
+then five brake frames, 20 ms apart — about 300 ms. The ramp to zero uses a *moderate*
+acceleration by default (`5`, not the motor's fastest), so a hard step-to-zero on a
+loaded wheel can't trip the 3 A overcurrent protection part-way through the stop and
+leave it half-done; the electric brake rounds that follow still deliver the firm final
+hold. Note that `0` would be the *worst* choice here rather than a neutral one: it
+selects the motor's default, which
+[measures identical to `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources),
+the steepest ramp available. You can change the ramp — see
+[tuning the stop](#tuning-the-stop-ramp) below.
 
 And it's best-effort: it swallows every I/O error and keeps sending, because even total
 failure is safe. If not one frame gets through, the wheel still coasts to a stop,
@@ -49,7 +47,7 @@ unconfigured bus behaves exactly as described):
 use m0601::{Bus, BusTiming};
 
 // One field at a time…
-let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_stop_accel(3);  // measured on your rig
+let bus = Bus::open("/dev/ttyUSB0", timeout)?.with_stop_accel(3);
 
 // …or the whole struct, e.g. straight from your own config.
 let bus = Bus::open("/dev/ttyUSB0", timeout)?

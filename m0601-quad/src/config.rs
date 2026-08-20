@@ -304,14 +304,15 @@ impl Config {
                 m0601::protocol::RPM_MAX
             ));
         }
-        if self.limits.accel != 0 {
+        // Both 0 and 1 are the motor's FASTEST ramp: 0 selects the motor
+        // default, and that default measures identical to 1 on hardware. A
+        // check that caught only 1 would wave through the same ramp spelled 0.
+        if self.limits.accel <= 1 {
             r.warnings.push(format!(
-                "limits.accel = {} is a guess: no vendor source states which end of \
-                 this byte's range is the gentle one, and the upstream manual's only \
-                 statement about it is a rate unit under which a LARGER value ramps \
-                 HARDER. A loaded launch on four wheels off one supply can trip the \
-                 3 A bus-overcurrent protection. Use 0 (the motor's own default) \
-                 unless you have measured the direction on this rig",
+                "limits.accel = {} is the motor's FASTEST ramp (0 selects the motor \
+                 default, which measures the same as 1); a loaded launch on four \
+                 wheels off one supply can trip the 3 A bus-overcurrent protection. \
+                 Use 5 unless measured otherwise",
                 self.limits.accel
             ));
         }
@@ -526,22 +527,21 @@ mod tests {
     }
 
     #[test]
-    fn a_nonzero_accel_warns_but_does_not_refuse() {
-        // Any nonzero byte asserts a ramp direction no vendor source states,
-        // so it warns — in either direction, not just at `1`. It is still a
-        // legitimate thing to set once measured, so it must never be fatal.
-        for guess in ["accel = 1", "accel = 5", "accel = 40"] {
-            let text = SHIPPED.replace("accel = 0", guess);
+    fn the_fastest_ramps_warn_but_do_not_refuse() {
+        // 0 and 1 are the same ramp — the motor's fastest — so both must
+        // warn. Warning on 1 alone would let the identical setting through
+        // under the spelling that looks most innocent.
+        for fastest in ["accel = 0", "accel = 1"] {
+            let text = SHIPPED.replace("accel = 5", fastest);
             let report = parsed(&text).validate();
-            assert!(report.errors.is_empty(), "{guess}: {:#?}", report.errors);
+            assert!(report.errors.is_empty(), "{fastest}: {:#?}", report.errors);
             assert!(
                 report.warnings.iter().any(|w| w.contains("accel")),
-                "{guess}: {:#?}",
+                "{fastest}: {:#?}",
                 report.warnings
             );
         }
-        // The shipped `accel = 0` asks the motor for its own ramp and so
-        // asserts nothing — no accel warning at all.
+        // The shipped `accel = 5` is the moderate ramp — no accel warning.
         let report = parsed(SHIPPED).validate();
         assert!(
             !report.warnings.iter().any(|w| w.contains("accel")),

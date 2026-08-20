@@ -3,9 +3,9 @@
 //! every exit path including a panic inside its own loop body.
 //!
 //! The stop ramps to zero followed by the electric brake; `safe_stop` uses
-//! the bus's `stop_accel` (default `SAFE_STOP_ACCEL` = 0, the motor's own
-//! default ramp, because the byte's direction is undocumented). It does not
-//! sense load, so it cannot guarantee the stop won't trip overcurrent.
+//! the bus's `stop_accel` (default `SAFE_STOP_ACCEL` = 5, a moderate ramp,
+//! not the motor's fastest) to reduce the chance of tripping overcurrent
+//! mid-stop — it does not sense load, so it can't guarantee no trip.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -42,11 +42,11 @@ pub fn run(mut motor: M0601, shared: Arc<Shared>, accel: u8) {
 fn active_frame(id: u8, cmd: &CmdState, accel: u8) -> Frame {
     match cmd.mode {
         Mode::Velocity if cmd.brake => frame_brake(id),
-        // `accel` is the operator-chosen ramp (default [`CONTROL_DEFAULT_ACCEL`]
-        // = 0, the motor's own). A single keystroke here can command a large
-        // instantaneous step — F is a jump to the full preset from standstill,
-        // F→B is a ~2× swing — so a too-sharp ramp risks tripping the 3 A
-        // bus-overcurrent protection on a loaded wheel.
+        // `accel` is the operator-chosen ramp (default [`CONTROL_DEFAULT_ACCEL`],
+        // gentler than the motor's fastest `1`). A single keystroke here can
+        // command a large instantaneous step — F is a jump to the full preset
+        // from standstill, F→B is a ~2× swing — so a too-sharp ramp risks
+        // tripping the 3 A bus-overcurrent protection on a loaded wheel.
         Mode::Velocity => frame_velocity(
             id,
             cmd.target.clamp(RPM_MIN.into(), RPM_MAX.into()) as i16,
@@ -150,8 +150,8 @@ mod tests {
         }
     }
 
-    /// `active_frame` at accel `1` — the accel the literal wire vectors
-    /// below were captured with (byte 6 == 0x01 for velocity).
+    /// `active_frame` at the motor's fastest ramp — the accel the literal
+    /// wire vectors below were captured with (byte 6 == 0x01 for velocity).
     fn frame(id: u8, cmd: &CmdState) -> super::Frame {
         super::active_frame(id, cmd, 1)
     }
@@ -262,7 +262,7 @@ mod tests {
     fn the_accel_byte_reaches_the_wire_in_velocity_mode() {
         // Byte 6 is the ramp. It must carry the operator's chosen accel, not
         // a hardcoded value — a keystroke here commands a large instantaneous
-        // step, and the ramp is the only lever over the resulting spike.
+        // step, so the ramp is what keeps the current spike under the trip.
         let f = active_frame(
             0x01,
             &cmd(Mode::Velocity, 100, false),
@@ -273,9 +273,10 @@ mod tests {
             active_frame(0x01, &cmd(Mode::Velocity, 100, false), 7)[6],
             7
         );
-        // The default asks the motor for its own ramp rather than asserting
-        // a direction no vendor source states.
-        const _: () = assert!(CONTROL_DEFAULT_ACCEL == 0);
+        // The default must be gentler than the motor's fastest ramp — which
+        // is 1, and also 0, since 0 selects the motor default and measures
+        // identical to 1. Both ends of that trap have to stay excluded.
+        const _: () = assert!(CONTROL_DEFAULT_ACCEL > 1);
         // Non-velocity frames have no accel byte and ignore the parameter.
         assert_eq!(
             active_frame(0x01, &cmd(Mode::Current, 4096, false), 7),

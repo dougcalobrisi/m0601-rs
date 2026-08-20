@@ -65,17 +65,13 @@ velocity mode *before* it sends anything.
 `1`–`5` set a *sustained* setpoint that holds until you press `S`, `K`, or `Q`, or a
 signal arrives. Do not walk away from a spinning wheel expecting it to stop itself.
 
-**3. The acceleration byte's direction is unknown — do not lean on it.** A large
-velocity step on a loaded wheel can spike current past the 3 A bus-overcurrent
-protection and drop the wheel until it auto-resets ~5 s later, and this byte is
-supposed to be the lever over that ramp. But **no vendor source states which end of
-its range is gentle**, and the upstream manual's only statement about it is a rate
-unit under which a *larger* value ramps *harder*
-([details]({{< relref "protocol" >}}#known-contradictions-between-sources)). Every
-default in this crate is now `0`, the motor's own ramp. On a vehicle, where several
-wheels launch off one supply, bound the *step* with `SlewLimiter` — that works
-regardless of direction — and treat a nonzero accel byte as something you measured,
-not something you assumed.
+**3. Acceleration `1` is the motor's *fastest* ramp — and so is `0`.** A large
+velocity step at that ramp on a loaded wheel can spike current past the 3 A
+bus-overcurrent protection and drop the wheel until it auto-resets ~5 s later.
+Larger values are gentler. The trap is `0`: it selects the motor's own default, which
+[measures identical to `1`]({{< relref "protocol" >}}#known-contradictions-between-sources),
+so it is the harshest setting rather than a safe neutral. On a vehicle, where several
+wheels launch off one supply, never use `0` or `1`.
 
 **4. Believe the reported mode, not the requested one.** `control` shows the mode the
 *motor* reports and turns the line red when the two disagree — because a dashboard

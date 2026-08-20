@@ -20,22 +20,24 @@ const SET_ID_SETTLE: Duration = Duration::from_millis(500);
 const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// Acceleration byte for the velocity-0 rounds of a stop sequence.
 ///
-/// `0`, meaning *the motor's own default ramp* — deliberately not a number of
-/// ours. The risk a stop must avoid is real: a hard ramp-to-zero on a loaded
-/// wheel can trip the motor's own 3 A bus-overcurrent protection *during* the
-/// stop, at which point it stops answering drive commands and the controlled
-/// deceleration is defeated. But avoiding that risk by picking a byte requires
-/// knowing which end of the range is gentle, and **no vendor source states the
-/// direction** (see [`crate::protocol::frame_velocity`]). This constant was
-/// `5` on the assumption that larger is gentler; the upstream manual's only
-/// statement about the byte is a unit — `RPM/0.1ms`, a *rate*, under which `5`
-/// would be five times *harsher* than `1`. A guess that may be backwards is
-/// worse than none, so the stop asks for the vendor's own default and the
-/// brake rounds that follow deliver the hard final hold regardless.
+/// **Not** the fastest ramp: a hard ramp-to-zero on a loaded wheel can trip
+/// the motor's own 3 A bus-overcurrent protection *during* the stop, at which
+/// point it stops answering drive commands and the controlled deceleration is
+/// defeated — the opposite of what a safe stop wants.
 ///
-/// Override it with [`Bus::with_stop_accel`](crate::Bus::with_stop_accel) once
-/// you have measured the direction on your own chassis.
-const SAFE_STOP_ACCEL: u8 = 0;
+/// `5` is a firm-but-safe middle. Measured on hardware
+/// (`accel_direction_capture` in `m0601/tests/hardware.rs`), a step to 120 RPM
+/// reaches 90% of setpoint in 446 ms at accel `1` and 1.99 s at accel `5`, so
+/// `5` is roughly a quarter of the aggression of the motor's own default.
+///
+/// Note that `0` would **not** be a neutral choice here: `0` selects the
+/// motor's default, and the same capture shows `0` and `1` are
+/// indistinguishable (446 ms both), confirming the wiki's "the default value
+/// as 1". `0` is the *fastest* ramp, not a middle one.
+///
+/// Override it with [`Bus::with_stop_accel`](crate::Bus::with_stop_accel) if a
+/// heavier or lighter chassis wants a different deceleration.
+const SAFE_STOP_ACCEL: u8 = 5;
 
 /// Default minimum idle gap enforced between frames on a bus — see
 /// [`Bus::with_min_gap`](crate::Bus::with_min_gap).
@@ -49,12 +51,14 @@ const SAFE_STOP_ACCEL: u8 = 0;
 pub const DEFAULT_MIN_GAP: Duration = Duration::from_micros(2500);
 
 /// Default acceleration byte for
-/// [`M0601::drive_velocity`](crate::M0601::drive_velocity).
+/// [`M0601::drive_velocity`](crate::M0601::drive_velocity) — the motor's
+/// *fastest* ramp.
 ///
-/// `1` is what the DFRobot wiki says the motor's own default equals ("when set
-/// to 0, it would be the default value as 1"), so this asserts nothing about
-/// ramp direction — which is undocumented, see
-/// [`crate::protocol::frame_velocity`]. Override the default per handle with
+/// `1` is the motor's own default: the wiki says so ("when set to 0, it would
+/// be the default value as 1"), and hardware measurement agrees — `0` and `1`
+/// reach setpoint in the same time. Larger values are gentler; see
+/// [`crate::protocol::frame_velocity`] for the measured numbers. Override the
+/// default per handle with
 /// [`M0601::with_default_accel`](crate::M0601::with_default_accel), or per
 /// call with
 /// [`M0601::drive_velocity_accel`](crate::M0601::drive_velocity_accel).
@@ -76,10 +80,11 @@ pub struct BusTiming {
     /// no frame overlaps the reply the previous one elicited.
     pub min_gap: Duration,
     /// Acceleration byte for the velocity-0 rounds of a controlled stop.
-    /// Defaults to `0`, the motor's own default ramp: a hard ramp-to-zero on
-    /// a loaded wheel can trip the motor's 3 A protection mid-stop and defeat
-    /// the stop, but which byte values are hard is undocumented, so the stop
-    /// declines to guess.
+    /// Defaults to `5`, a firm-but-safe middle. **Not** the fastest ramp — a
+    /// hard ramp-to-zero on a loaded wheel can trip the motor's 3 A protection
+    /// mid-stop and defeat the stop — and note that `0` is the *fastest* ramp
+    /// here, not a neutral one: it selects the motor default, which measures
+    /// identical to `1`.
     pub stop_accel: u8,
     /// Gap between the rounds of a [`M0601::safe_stop`](crate::M0601::safe_stop)
     /// sequence.

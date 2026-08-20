@@ -49,9 +49,10 @@
 //! - `CMD` is `0x64` (drive), `0x74` (feedback query) or `0xA0` (mode
 //!   switch). **For `0xA0` the last byte is the mode (`01`/`02`/`03`), not
 //!   a CRC.**
-//! - `ACCEL` sets ramp steepness; `0` selects the motor default. Which end
-//!   of the range is gentle is **undocumented and unmeasured** — see
-//!   [`protocol::frame_velocity`].
+//! - `ACCEL` sets ramp steepness: larger is gentler, and `0` selects the
+//!   motor default — which measures identical to `1`, the *fastest* ramp.
+//!   No vendor source states that direction; see
+//!   [`protocol::frame_velocity`] for the measurement.
 //! - `BRAKE` = `0xFF` engages the electric brake (velocity mode only).
 //! - Two special unaddressed frames exist: the broadcast ID query
 //!   (`C8 64 00×7 DE`) and set-ID (`AA 55 53 <id> 00×6`, no CRC, must be

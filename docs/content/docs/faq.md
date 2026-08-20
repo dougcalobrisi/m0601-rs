@@ -89,24 +89,25 @@ check. Use [`drive`]({{< relref "cli/drive" >}}) or
 
 ## Faults at drive start {#fault-on-start}
 
-Almost always the 3 A bus-overcurrent protection, tripped by too aggressive a ramp: a
-big velocity step on a loaded wheel spikes current past 3 A.
+Almost always the 3 A bus-overcurrent protection, tripped by too aggressive a ramp.
+`drive_velocity` uses acceleration `1`, the motor's *fastest* ramp, and so does the
+CLI's `drive velocity`; a big step at accel 1 on a loaded wheel spikes current past
+3 A. (`control` is the exception — it defaults to `3`, deliberately gentler, because a
+single keystroke there commands a large instantaneous step.)
 
-The tempting fix is the frame's acceleration byte, and it is a trap. **No vendor source
-states which end of that byte's range is the gentle one**, and the upstream manual's
-only statement about the field is a rate unit (`RPM/0.1ms`) under which a *larger*
-value ramps *harder*
-([details]({{< relref "protocol" >}}#known-contradictions-between-sources)). This crate
-used to claim larger was gentler; it no longer does, and every default is `0` — the
-motor's own ramp — rather than a guess.
+Soften it with `drive_velocity_accel` or `drive velocity --accel n` (`--accel` lives on
+the `velocity` subcommand, not on `drive` itself). Larger is gentler — but **`0` is
+not**: it selects the motor's default, which
+[measures identical to `1`]({{< relref "protocol" >}}#known-contradictions-between-sources),
+so it is the harshest setting rather than a safe middle. Keep the number small either
+way: a step to 120 RPM takes ~0.45 s at `1`, ~2 s at `5`, and over 3 s at `20`, so
+`3`–`5` is the useful range and `40` is nearly a standstill.
 
-What reliably helps, in either direction: **make the step smaller**. Ramp the setpoint
-host-side with [`SlewLimiter`]({{< relref "concepts/setpoint-shaping" >}}) rather than
-commanding a jump, or command a lower RPM. If you want to try the byte anyway, sweep it
-— `drive_velocity_accel(rpm, n)` or `drive velocity --accel n` (`--accel` lives on the
-`velocity` subcommand, not on `drive` itself) — and watch time-to-setpoint in telemetry
-to learn the direction on your hardware. The protection auto-resets about five seconds
-after the *trip*, so a wheel that is still loaded simply trips again.
+The other lever, which works no matter what the motor's ramp is doing, is to make the
+*step* smaller: ramp the setpoint host-side with
+[`SlewLimiter`]({{< relref "concepts/setpoint-shaping" >}}) rather than commanding a
+jump. The protection auto-resets about five seconds after the *trip*, so a wheel that
+is still loaded simply trips again.
 
 ## Out-of-range values: clamp vs. reject {#out-of-range}
 

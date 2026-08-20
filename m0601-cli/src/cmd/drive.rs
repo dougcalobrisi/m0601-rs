@@ -41,8 +41,8 @@ pub enum Setpoint {
     Velocity {
         /// Target speed in RPM (clamped to ±330 on the wire).
         rpm: i16,
-        /// Acceleration byte; `0` selects the motor default. Which end of
-        /// the range is gentle is undocumented — see
+        /// Acceleration byte: larger is gentler, and `0` selects the motor
+        /// default, which is the *fastest* ramp — see
         /// [`m0601::protocol::frame_velocity`].
         accel: u8,
     },

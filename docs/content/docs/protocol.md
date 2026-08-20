@@ -123,10 +123,10 @@ grounds for rejection.
 - The 16-bit big-endian value in bytes 2–3 is interpreted **per the active
   mode**. Zero is *not* universally "stop": 0 rpm in velocity, "drive to 0°" in
   position, "zero torque" (coast) in current.
-- **Acceleration** (byte 6): 0–255. `0` = the motor's own default ramp.
-  **Which end of the range is the gentle one is undocumented and unmeasured** —
-  see [contradiction 6](#known-contradictions-between-sources) before assuming a bigger number is
-  softer.
+- **Acceleration** (byte 6): 0–255. **Larger is gentler**; `0` selects the motor's
+  own default, which measures identical to `1` — the *fastest* ramp, not a middle
+  one. Stated by no vendor source; measured here, see
+  [contradiction 6](#known-contradictions-between-sources).
 - **Brake** (byte 7): `0xFF` engages the electric brake (velocity mode only);
   otherwise `0x00`.
 
@@ -279,59 +279,73 @@ only the 500 Hz maximum.
 MotorLink and navigation_robot send 5×. Sending 5× is harmless (the frames are
 idempotent) and is what this crate does.
 
-**6. Acceleration byte direction — unstated everywhere, and this crate used to claim
-otherwise.** Earlier versions of this page said "every source, the wiki included, says
-`1` is the fastest ramp and larger values are gentler." **That claim was wrong: no
-source says it.** What the sources actually say:
+**6. Acceleration byte direction — resolved by hardware capture.** Earlier versions of
+this page said "every source, the wiki included, says `1` is the fastest ramp and larger
+values are gentler." **No source says that** — the direction is stated nowhere. It is,
+however, *true*, which this project established by measuring it rather than by finding
+it written down.
 
-The **upstream DDT manual** (`M0601C_111 Motor Driver Instructions`,
+Running `accel_direction_capture` (`m0601/tests/hardware.rs`) against a real unit —
+stepping an unloaded wheel from rest to 120 RPM and timing the arrival at 90% of
+setpoint, repeated across the byte's range:
+
+| accel | 0 | 1 | 2 | 5 | 20 | 100 | 255 |
+|---|---|---|---|---|---|---|---|
+| time to 90% | 446 ms | 446 ms | 837 ms | 1.99 s | *never* | *never* | *never* |
+| reached in 3 s | 119 RPM | 119 RPM | 119 RPM | 119 RPM | 41 RPM | 8 RPM | 3 RPM |
+| peak current | 0.40 A | 0.38 A | 0.37 A | 0.39 A | 0.23 A | 0.16 A | 0.14 A |
+
+Two runs agreed to within 10 ms. Three things fall out:
+
+1. **Larger is gentler.** Unambiguous and monotonic across the whole range.
+2. **`0` is the *fastest* ramp, not a neutral one.** `0` and `1` are indistinguishable
+   (446 ms both), which confirms the wiki's "the default value as 1" and contradicts the
+   intuition that the motor default is something middling. Anything trying to avoid a
+   harsh ramp must avoid `0` as carefully as `1`.
+3. **The byte is a time-per-rpm, and the upstream unit is wrong.** Time-to-setpoint is
+   linear in the byte — about **3.6 ms per RPM per unit**, plus ~60 ms of fixed latency
+   — so the byte scales a *duration*, matching the orientation of the wiki's worked
+   example and MotorLink's `0.1ms/rpm`. It is **not** the `RPM/0.1ms` **rate** that both
+   the wiki's own unit line and the upstream DDT manual state; read literally that rate
+   would make larger values harsher, which is backwards. The magnitude is off too: the
+   wiki's "1 ms each 1 rpm" at accel `1` measures ~3.6 ms per rpm here.
+
+The measured constant is one unloaded motor on one rig and may vary with load, firmware
+or SKU; the **ordering** is the durable result. Practical consequence: the gentle end
+arrives fast. `3`–`5` is a useful softening, while `20` and above are so slow they read
+as a fault — at `20` the wheel had reached only 41 RPM after three seconds.
+
+What each source actually says, for the record. The **upstream DDT manual**
+(`M0601C_111 Motor Driver Instructions`,
 [PDF](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf),
-p. 10) gives one sentence, and it is only a unit:
+p. 10) gives one sentence, a unit and nothing else — no direction, and no statement that
+the default equals `1`:
 
 > "Acceleration：Valid in velocity loop. unity: RPM/0.1ms. When set to 0, it would be
 > the default value"
 
-No direction, no worked example, and — note — no statement that the default equals
-`1`. `RPM/0.1ms` is a **rate**, and if the unit is taken at face value a *larger* byte
-ramps *harder*, the opposite of what this crate documented.
-
 The **DFRobot wiki** ([FIT1042](https://wiki.dfrobot.com/fit1042/docs/23322), identical
-on [FIT1038](https://wiki.dfrobot.com/fit1038/docs/23322)) repeats the sentence with
-additions, and the result contradicts itself three ways:
+on [FIT1038](https://wiki.dfrobot.com/fit1038/docs/23322)) repeats it with additions
+that contradict themselves three ways:
 
 > "Acceleration time: Valid in velocity loop mode. unity: 1 rpm/0.1 ms. When you set to
 > 1, acceleration time is 10*0.1 ms = 1 ms each 1 rpm. When set to 0, it would be the
 > default value as 1."
 
-1. The field is renamed "acceleration **time**", but the unit given is a **rate**.
-2. The worked example re-reads that unit as **time per rpm** — the inverse orientation.
-3. The factor of ten is unexplained: setting the byte to `1` supposedly yields
-   `10 * 0.1 ms`, not `1 * 0.1 ms`.
-
-The wiki's one durable addition is that the default equals `1`, which is why
-`DEFAULT_DRIVE_ACCEL` is `1` — that is a statement about the *default*, not about
-direction. **MotorLink**'s README inverts the unit again ("`0` = default
-(`1` = 0.1ms/rpm)"), i.e. time per rpm.
+It renames the field "acceleration **time**" while giving a **rate** unit, then works an
+example reading that unit as **time per rpm** — the inverse orientation — with an
+unexplained factor of ten. The measurement vindicates the worked example's orientation
+and neither statement's magnitude. The wiki's durable contribution is "the default value
+as 1", now confirmed. **MotorLink**'s README inverts the unit a third way
+("`0` = default (`1` = 0.1ms/rpm)").
 
 Eight independent implementations were checked (tech-life-hacking/DDT_M0601C_111,
 DDTRobot/motor-driver-examples, Il1yasviel/navigation_robot,
 HarvestX/DDT-M0601C-112-U2D2, Ar-Ray-code/ddt_m06_ros2_driver,
-takex5g/M5_DDTMotor_M15M06, LonelyMarch/Basic_Framework_MC02, MotorLink) along with the
-DFRobot product pages, Hackster, ElectronicWings and Instructables. **None states the
-direction, and no published measurement resolves it.**
-
-Consequently this crate no longer picks a side, and no longer picks byte values that
-depend on one: `BusTiming::stop_accel`, the `control` CLI default, and the shipped
-`m0601-quad` `limits.accel` are all `0` (the motor's own default) where they were
-previously `5`, `3` and `5` — numbers chosen on the assumption that larger is gentler,
-which the upstream unit contradicts. `m0601-quad` warns on any nonzero `limits.accel`.
-The direction-independent way to keep a launch under the 3 A trip is to bound the
-*step*, with `SlewLimiter`, not to guess at this byte.
-
-**Settling it** needs a rig, not another source: command a step from 0 to a fixed RPM
-at `accel = 1`, repeat at `20` and `100`, log telemetry, compare time-to-setpoint. If
-time-to-setpoint grows with the byte, larger is gentler; if it shrinks, the unit is
-literal. Tracked in [#2](https://github.com/dougcalobrisi/m0601-rs/issues/2).
+takex5g/M5_DDTMotor_M15M06, LonelyMarch/Basic_Framework_MC02, MotorLink), along with the
+DFRobot product pages, Hackster, ElectronicWings and Instructables. None states the
+direction, and no published measurement of it existed before this one
+([#2](https://github.com/dougcalobrisi/m0601-rs/issues/2)).
 
 **7. Minor spec conflicts.** No-load current ≤ 0.25 A (product page) vs ≤ 0.2 A
 (MotorLink README); mounting thread depth 5 mm (wiki) vs 6 mm (README); supply 18 V

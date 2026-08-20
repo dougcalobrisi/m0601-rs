@@ -417,7 +417,7 @@ fn safe_stop_forces_velocity_mode_before_zeroing() {
 
     // Expected bytes written out, not recomputed from the code under test.
     let mode = vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02];
-    let zero = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50];
+    let zero = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x65];
     let brake = vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xD1];
     assert!(mock.sent[..5].iter().all(|f| *f == mode));
     assert!(mock.sent[5..10].iter().all(|f| *f == zero));
@@ -840,7 +840,7 @@ fn mirrored_leaves_position_and_brake_untouched() {
     assert_eq!(mock.sent[2], vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
     assert_eq!(
         mock.sent[7],
-        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50]
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x65]
     );
 }
 
@@ -869,7 +869,7 @@ fn safe_stop_all_is_round_major_across_motors() {
         for (i, id) in [0x01u8, 0x02, 0x03, 0x04].into_iter().enumerate() {
             let expected = match step {
                 0..=4 => frame_mode(id, Mode::Velocity),
-                5..=9 => frame_velocity(id, 0, 0), // SAFE_STOP_ACCEL
+                5..=9 => frame_velocity(id, 0, 5), // SAFE_STOP_ACCEL
                 _ => frame_brake(id),
             };
             assert_eq!(round[i], expected.to_vec(), "step {step}, motor 0x{id:02X}");
@@ -881,7 +881,7 @@ fn safe_stop_all_is_round_major_across_motors() {
     assert_eq!(mock.sent[0], vec![0x01, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
     assert_eq!(
         mock.sent[20],
-        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50]
+        vec![0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x65]
     );
     assert_eq!(
         mock.sent[40],
@@ -1107,14 +1107,11 @@ fn a_cloned_bus_is_another_handle_on_the_same_port() {
 #[test]
 fn default_bus_timing_matches_the_historical_constants() {
     // Pin the two defaults a consumer is most likely to read, and that other
-    // tests depend on. `stop_accel` is 0 — the motor's own default ramp —
-    // because no vendor source states which end of the byte's range is
-    // gentle, so the stop declines to guess (was 5, see PROTOCOL.md).
+    // tests depend on. `stop_accel` is 5: measured on hardware, larger is
+    // gentler, and 0 selects the motor default which is the FASTEST ramp
+    // rather than a neutral one — so 0 here would be a hard stop.
     let t = BusTiming::default();
-    assert_eq!(
-        t.stop_accel, 0,
-        "stop ramp default must stay 0 (motor default)"
-    );
+    assert_eq!(t.stop_accel, 5, "stop ramp default must stay 5");
     let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);
     assert_eq!(bus.timing(), t, "a fresh bus carries the default timing");
     assert_eq!(

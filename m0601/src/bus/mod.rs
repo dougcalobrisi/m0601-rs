@@ -200,11 +200,10 @@ impl<T: Transport> Bus<T> {
     /// stop ([`M0601::safe_stop`] / [`safe_stop_all`](Self::safe_stop_all)).
     ///
     /// Shared-port builder, exactly like [`with_min_gap`](Self::with_min_gap).
-    /// Defaults to `0`, the motor's own default ramp (see [`BusTiming`]) —
-    /// a hard ramp-to-zero on a loaded wheel can trip the motor's overcurrent
-    /// protection mid-stop, but which byte values are hard is undocumented,
-    /// so the default declines to guess. Set this once you have measured the
-    /// direction on your own chassis.
+    /// Defaults to a moderate ramp (see [`BusTiming`]); a hard ramp-to-zero on
+    /// a loaded wheel can trip the motor's overcurrent protection mid-stop.
+    /// Larger is gentler, and `0` is the *fastest* ramp rather than a neutral
+    /// one — it selects the motor default, which measures identical to `1`.
     #[must_use]
     pub fn with_stop_accel(self, accel: u8) -> Self {
         lock(&self.port).timing.stop_accel = accel;
