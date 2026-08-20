@@ -26,6 +26,25 @@ lockstep; `m0601-quad` is a sample and is not published.
   `docs/content/docs/protocol.md` records the table, and contradiction 6 moves from
   *unresolved* to *resolved by capture*.
 
+- **The ramp's shape is verified linear, not just monotonic.** Time-to-90% alone could
+  not distinguish a linear ramp from a first-order lag, so the "~3.6 ms per RPM per
+  unit" law was an interpretation. `accel_curve_capture` dumps the full spin-up curve
+  at accel `5` and `20`: quartile-span ratios 0.98–1.02 where an exponential approach
+  would give 1.71, under 0.5% deviation from a straight chord, and the same
+  3.5–3.6 ms/RPM/unit slope at both values, across two runs. The published law now
+  rests on a measured shape.
+
+- **The manufacturer's own manual was found, and the docs now cite it.** Direct Drive
+  Tech publishes `M0601C_111 Motor Driver Instructions`, a 16-page PDF with selectable
+  text, linked only from a third-party repo's README — the docs used to claim no
+  official PDF exists. It resolves the open spec conflicts (no-load current ≤ 0.25 A,
+  mounting thread depth 5 mm, 18 V rated with a 24 V DC maximum input), confirms fault
+  BIT4 is "Over heat" (MotorLink's "Troubleshoot" label is wrong), and makes the
+  set-ID frame's 5× repetition load-bearing rather than cautious ("The ID will be
+  changed after 5 times repeating"). The protocol page's source hierarchy is reordered
+  accordingly: the third-party repo previously called "authoritative where sources
+  disagree" is not a vendor publication.
+
 - **`0` is documented as the fastest ramp, not a neutral default.** The same capture
   shows `0` and `1` are indistinguishable (446 ms both), confirming the wiki's "the
   default value as 1". Nothing previously said so, and the natural reading of "`0` =

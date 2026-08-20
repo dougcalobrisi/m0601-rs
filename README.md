@@ -283,8 +283,10 @@ The `spin_and_stop` hardware test additionally requires
 
 See [the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md) for the full spec with per-claim sourcing.
 
+- [DDT M0601C_111 manual (PDF)](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf) — the manufacturer's 16-page datasheet
+- [DDTRobot/motor-driver-examples](https://github.com/DDTRobot/motor-driver-examples) — the manufacturer's own sample code
 - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
-- [DDT M0601C-111 vendor sample code](https://github.com/tech-life-hacking/DDT_M0601C_111)
+- [DDT_M0601C_111, third-party samples (links the manual)](https://github.com/tech-life-hacking/DDT_M0601C_111)
 - [navigation_robot, an independent C driver with test vectors](https://github.com/Il1yasviel/navigation_robot)
 - [MotorLink, an independent implementation](https://github.com/MukeshSankhla/MotorLink)
 

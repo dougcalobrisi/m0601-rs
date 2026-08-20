@@ -32,27 +32,30 @@ M0602C, M1502A, DDSM115 — are *not* protocol-guaranteed identical.
 
 ## Electrical & mechanical specs
 
-From the DFRobot product pages (3076/3077, identical tables):
+From the manufacturer's manual (p. 15 parameter table, tested at 18 V DC), which the
+DFRobot product pages (3076/3077) reproduce with omissions:
 
 | Parameter | Value |
 |---|---|
-| Operating voltage | 18 V DC (MotorLink's README gives a 12 V minimum) |
+| Operating voltage | 18 V DC rated; **24 V DC maximum input** (manual p. 7). The manual states no minimum, so MotorLink's 12 V floor is unsupported rather than disproven |
 | Rated current | 1.25 A |
 | Stall current | ≤ 2.7 A |
-| No-load current | ≤ 0.25 A (MotorLink's README says ≤ 0.2 A) |
+| No-load current | ≤ 0.25 A (manual p. 15; MotorLink's ≤ 0.2 A is wrong) |
 | Rated speed | 115 rpm |
 | No-load speed | 200 ± 10 rpm |
 | Rated torque | 0.96 N·m |
 | Stall torque | 2.0 N·m |
+| Maximum efficiency | ≥ 60% (manual only) |
+| Motor weight | 485 g (manual only — the whole motor, drive included) |
 | Torque constant | 0.75 N·m/A |
 | Speed constant | 11.1 rpm/V |
-| Encoder resolution | 4096 (relative accuracy 1024) |
+| Encoder resolution | 4096 (absolute accuracy 1024) |
 | Protection rating | IP54 |
 | Noise | ≤ 50 dB |
 | Operating temperature | −20 … 45 °C |
 | Wheel diameter | 102 mm |
 | Drive | direct — the wheel is the rotor; no gearbox, no backlash |
-| Mounting | M2.5 thread (wiki: 5 mm depth; MotorLink README: 6 mm), ⌀15.2 mm boss with 8 mm flat |
+| Mounting | M2.5 stator thread, **5 mm** depth (manual p. 8; MotorLink's 6 mm is wrong), ⌀15.2 mm boss with 8 mm flat; rotor screw holes M2.5 × 4 mm |
 
 Note the stall current (≤ 2.7 A) against the current-loop command range (±32767 ≈
 ±8 A): the top of the commandable range is far beyond what the motor can draw, and
@@ -91,8 +94,10 @@ Gotchas, in the order they actually bite:
   frame — its byte 1 is a mode value, not the command).
 
 **Polling model:** a drive command does not latch. Officially documented max is
-**500 Hz**; community/empirical floor is **~50 Hz (≤ every 20 ms)** or the motor
-coasts. Power-up defaults: velocity mode, ID as last assigned (stored in flash).
+**500 Hz** (manual p. 9: "maximum frequency: 500 Hz", method "polling"); the manual
+states **no minimum**, so the **~50 Hz (≤ every 20 ms)** floor below which the motor
+coasts remains community/empirical. Power-up defaults: velocity mode, ID as last
+assigned (stored in flash).
 
 ## CRC
 
@@ -106,6 +111,10 @@ for byte in data:
     crc ^= byte
     repeat 8: crc = (crc >> 1) ^ 0x8C if crc & 1 else crc >> 1
 ```
+
+The manual (p. 11) names the same algorithm ("CRC-8\Maxim ... x8 + x5 + x4 + 1")
+but its byte-range sentence is truncated ("from DATA[0] to DATA[]"), so the bytes-0-8
+range rests on the wiki plus this crate's hardware capture, not on the manual.
 
 **Two host frames carry no CRC:** the mode-switch frame (`0xA0`) puts the mode
 value in byte 9, and the set-ID frame sets byte 9 to `0x00`. Replies carry the
@@ -128,7 +137,10 @@ grounds for rejection.
   one. Stated by no vendor source; measured here, see
   [contradiction 6](#known-contradictions-between-sources).
 - **Brake** (byte 7): `0xFF` engages the electric brake (velocity mode only);
-  otherwise `0x00`.
+  otherwise `0x00`. The manual is explicit that `0xFF` is the *only* live value:
+  "Brake won't work at other values" (p. 10) — a partial-brake byte does nothing.
+- Beware a typo in the manual's own p. 10 frame table: DATA[2] *and* DATA[3] are both
+  labelled "high 8 bits" of the setpoint; DATA[3] is the low byte.
 
 Worked examples (ID `0x01`, accel 0) — these are independent implementations' verified
 vectors, reproduced as golden tests in `m0601/tests/vectors.rs`:
@@ -156,9 +168,12 @@ repeating is harmless). Switching **into position mode requires < 10 rpm**.
 
 ### Set ID (unaddressed)
 
-`AA 55 53 <new_id> 00 00 00 00 00 00` — **no CRC; byte 9 is 0x00.** Sent **5×**;
-the new ID persists in flash. **Every motor that hears this frame takes the new
-ID** — send it with exactly one motor on the bus.
+`AA 55 53 <new_id> 00 00 00 00 00 00` — **no CRC; byte 9 is 0x00.** Sent **5×**,
+and for this frame the repetition is *required*, not cautious: "The ID will be
+changed after 5 times repeating the ID setting command" (manual p. 12). The manual
+also allows ID setting only **once per power cycle**. The new ID persists in flash.
+**Every motor that hears this frame takes the new ID** — send it with exactly one
+motor on the bus.
 
 ### Broadcast ID query (unaddressed)
 
@@ -219,9 +234,12 @@ known implementation agrees on that.
 `0x00` means no fault. Multiple bits can be set at once; while a protection is active
 the motor stops responding to drive commands and flags the corresponding bit.
 
-> **Naming note.** MotorLink labels `0x10` "Troubleshoot"; the DFRobot wiki's protocol
-> image and the navigation_robot C driver both call it the overheat/over-temperature
-> fault. This crate follows the wiki.
+> **Naming note.** The manufacturer's manual (p. 11) names BIT4 (`0x10`) "Over heat",
+> settling what used to be a judgment call: MotorLink's "Troubleshoot" label is simply
+> wrong. The full bit table above matches the manual's list (Sensor Fault, Bus over
+> current, Phase Over current, Stall, Over heat), and the trip/release columns match
+> its protection section (p. 13: power-off with ~5 s auto-recovery; overheat releases
+> 5 °C below the 80 °C threshold).
 
 ## Modes
 
@@ -264,20 +282,27 @@ revisions may differ. The driver follows that default, with a
 [strict opt-in]({{< relref "library/quickstart" >}}) for callers who'd rather drop a
 suspect frame.
 
-**2. Acceleration byte position.** Wiki + DDT vendor sample + navigation_robot:
-**byte 6**. MotorLink's Python examples put it at byte 4 — a discrepancy that never
-surfaces there, because all its captured vectors use accel 0. Byte 6 is correct.
+**2. Acceleration byte position.** Wiki + manual + the DDT org's own examples +
+every cross-checked implementation: **byte 6**. The one dissent is a bug in a single
+MotorLink example file (`examples/m0601_operations.py`, byte 4 — a documented
+reserved byte) that contradicts MotorLink's own README table and browser app, both of
+which use byte 6. Harmless there only because the value written is zero either way.
+Byte 6 is correct.
 
 **3. Set-ID checksum.** MotorLink's README table shows a CRC (`…00 CB`, which *is*
 the CRC-8/MAXIM of that frame) in byte 9, but the wiki, the vendor sample, and
 MotorLink's own `m0601_set_id.py` all send `0x00`. No CRC is correct.
 
-**4. The ≥50 Hz floor** is community/empirical, not official — official docs state
-only the 500 Hz maximum.
+**4. The ≥50 Hz floor** is community/empirical, not official. The manufacturer's
+manual has now been read in full: it gives only "maximum frequency: 500 Hz" (p. 9)
+and never states a minimum, so the floor stays empirical.
 
 **5. Repeat counts.** Mode-switch and set-ID frames: the vendor sample sends once;
-MotorLink and navigation_robot send 5×. Sending 5× is harmless (the frames are
-idempotent) and is what this crate does.
+MotorLink and navigation_robot send 5×, which is what this crate does. For
+**mode-switch** the repetition is merely harmless insurance (the frame is
+idempotent). For **set-ID** the manual makes it load-bearing: the ID changes only
+"after 5 times repeating" the command (p. 12), so a single send is not just risky but
+specified to do nothing.
 
 **6. Acceleration byte direction — resolved by hardware capture.** Earlier versions of
 this page said "every source, the wiki included, says `1` is the fastest ramp and larger
@@ -361,19 +386,49 @@ DFRobot product pages, Hackster, ElectronicWings and Instructables. None states 
 direction, and no published measurement of it existed before this one
 ([#2](https://github.com/dougcalobrisi/m0601-rs/issues/2)).
 
-**7. Minor spec conflicts.** No-load current ≤ 0.25 A (product page) vs ≤ 0.2 A
-(MotorLink README); mounting thread depth 5 mm (wiki) vs 6 mm (README); supply 18 V
-(wiki/product page) vs a 12 V minimum (MotorLink).
+**7. Minor spec conflicts — resolved by the manufacturer's manual.** No-load
+current is **≤ 0.25 A** (manual p. 15; MotorLink's ≤ 0.2 A is wrong). Stator mounting
+thread depth is **5 mm** (manual p. 8; the wiki was right, MotorLink's 6 mm is
+wrong). Supply: **18 V DC rated, 24 V DC maximum input** (manual pp. 7/15); the
+manual states no minimum, so MotorLink's 12 V floor is unsupported rather than
+disproven.
 
-**8. No official PDF datasheet exists.** The wiki's protocol section is published as
-images only.
+**8. Official documentation exists, but not from DFRobot.** Direct Drive Tech
+publishes `M0601C_111 Motor Driver Instructions` as a 16-page PDF with the frame
+layouts, fault bits, protections and motor parameters in selectable text
+([PDF](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf)).
+It is linked from a third-party repo's README rather than from the DFRobot product
+page, which is why it went unfound. DFRobot's wiki carries the same protocol content
+as images, with one added sentence about the acceleration byte that is not in the
+upstream manual (see contradiction 6).
 
 ## Sources
 
-Official: the [DFRobot wiki protocol
-reference](https://wiki.dfrobot.com/fit1042/docs/23322) and the FIT1042/FIT1038
-product pages. Cross-checked implementations: the [DDT vendor
-sample](https://github.com/tech-life-hacking/DDT_M0601C_111) (authoritative where
-sources disagree), [navigation_robot](https://github.com/Il1yasviel/navigation_robot)
-(ESP32 C driver with test vectors), and
-[MotorLink](https://github.com/MukeshSankhla/MotorLink).
+In order of authority:
+
+1. **The manufacturer's manual** — `M0601C_111 Motor Driver Instructions`
+   ([16-page PDF](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf),
+   Direct Drive Tech). Frames and fault bits on pp. 10–11, protections p. 13, motor
+   parameters p. 15. Authoritative where sources disagree — with the caveats noted
+   above (a truncated CRC-range sentence, a p. 10 byte-label typo, and a literal
+   acceleration unit that measurement contradicts).
+2. **[DDTRobot/motor-driver-examples](https://github.com/DDTRobot/motor-driver-examples)**
+   — the Direct Drive Technology GitHub organisation's own sample code (`Tx[6]=Acce;`).
+3. The [DFRobot wiki protocol reference](https://wiki.dfrobot.com/fit1042/docs/23322)
+   and the FIT1042/FIT1038 product pages. The wiki is derived from the manual, as
+   images, with at least one known divergence: its acceleration sentence (the
+   "default value as 1" claim — confirmed by measurement — and a worked example that
+   inverts the manual's unit).
+4. Cross-checked third-party implementations, all placing acceleration at byte 6:
+   [DDT_M0601C_111](https://github.com/tech-life-hacking/DDT_M0601C_111) (whose README
+   is where the manual is linked from),
+   [navigation_robot](https://github.com/Il1yasviel/navigation_robot) (ESP32 C driver
+   with test vectors), [MotorLink](https://github.com/MukeshSankhla/MotorLink),
+   [DDT-M0601C-112-U2D2](https://github.com/HarvestX/DDT-M0601C-112-U2D2),
+   [ddt_m06_ros2_driver](https://github.com/Ar-Ray-code/ddt_m06_ros2_driver),
+   [M5_DDTMotor_M15M06](https://github.com/takex5g/M5_DDTMotor_M15M06), and
+   [Basic_Framework_MC02](https://github.com/LonelyMarch/Basic_Framework_MC02).
+
+Earlier versions of this page named the DFRobot wiki as the top source and called the
+third-party `DDT_M0601C_111` repo "authoritative where sources disagree"; both
+rankings predate finding the manual.
