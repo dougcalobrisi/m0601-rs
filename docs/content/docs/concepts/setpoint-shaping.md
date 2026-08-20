@@ -32,7 +32,7 @@ setpoint you last gave it:
 |---|---|---|
 | `drive_velocity_accel(rpm, accel)` | one call | the frame's `ACCEL` byte; larger is gentler, and `0` is the motor default — [the same ramp as `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources), the steepest there is |
 | `Bus::with_default_accel(n)` | whole bus | the default every `drive_velocity` uses |
-| `BusTiming::stop_accel` | stops | defaults to `5` so a hard ramp-to-zero can't trip the 3 A protection mid-stop |
+| `BusTiming::stop_accel` | stops | defaults to `5`, but [measures inert]({{< relref "stopping-safely" >}}) — the byte shapes acceleration only |
 
 ## Host-side ramping: `SlewLimiter`
 
