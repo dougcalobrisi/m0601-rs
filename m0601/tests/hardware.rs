@@ -651,3 +651,135 @@ fn stop_ramp_capture() {
          draw enough current for the difference to matter.\n"
     );
 }
+
+/// Audit trail for [`stop_ramp_capture`]'s surprising result — that the accel
+/// byte is inert on deceleration.
+///
+/// That claim rests on one number per trial, and a single sample can hide a
+/// bug: a byte that never reached the wire, a wheel that was not really at
+/// speed, a handover sampled at the wrong instant. This dumps the **whole**
+/// deceleration curve at the two extremes of the byte, side by side, plus the
+/// literal TX frame for each so the wire byte is visible rather than assumed.
+///
+/// If the two columns track each other sample for sample, the byte is inert.
+/// If `stop_ramp_capture` were measuring something else, the curves would
+/// diverge somewhere even when their 100 ms samples happened to agree.
+///
+/// ```sh
+/// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
+///   cargo test -p m0601 --test hardware -- --ignored --nocapture stop_ramp_curve_capture
+/// ```
+///
+/// **Spins the wheel. Get it off the ground first.**
+#[test]
+#[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
+fn stop_ramp_curve_capture() {
+    let _guard = port_guard();
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "stop_ramp_curve_capture spins the wheel; set M0601_ALLOW_MOTION=1 to allow it"
+    );
+
+    /// The extremes. On spin-up these differ by more than 250x.
+    const PROBES: [u8; 2] = [1, 255];
+    const SAMPLE_GAP: Duration = Duration::from_millis(5);
+    const REPLY_WAIT: Duration = Duration::from_millis(4);
+    const CURVE_LEN: Duration = Duration::from_millis(400);
+
+    let target: i16 = std::env::var("M0601_TEST_RPM")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(120);
+
+    let mut guard = StopOnDrop(Some(open()));
+    let m = guard.0.as_mut().expect("just constructed");
+    m.set_mode(Mode::Velocity).expect("set velocity mode");
+
+    // (elapsed_ms, rpm, amps) per probe.
+    let mut curves: Vec<Vec<(u128, i16, f32)>> = Vec::new();
+
+    for accel in PROBES {
+        m.set_mode(Mode::Velocity).expect("set velocity mode");
+        let up = m0601::protocol::frame_velocity(m.id(), target, 1);
+        let want = f32::from(target) * 0.9;
+        let spin_deadline = Instant::now() + Duration::from_millis(2500);
+        let mut at_speed: Option<Instant> = None;
+        while Instant::now() < spin_deadline {
+            if let Ok(Some(fb)) = m.transact(&up, REPLY_WAIT)
+                && at_speed.is_none()
+                && f32::from(fb.speed_rpm) >= want
+            {
+                at_speed = Some(Instant::now());
+            }
+            if at_speed.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
+                break;
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+        assert!(
+            at_speed.is_some(),
+            "wheel never reached speed for accel {accel}"
+        );
+
+        let stop = m0601::protocol::frame_velocity(m.id(), 0, accel);
+        let hex: Vec<String> = stop.iter().map(|b| format!("{b:02X}")).collect();
+        eprintln!(
+            "accel {accel:>3}: TX {}  (byte 6 = 0x{:02X})",
+            hex.join(" "),
+            stop[6]
+        );
+        assert_eq!(stop[6], accel, "the accel byte must reach the wire");
+
+        let start = Instant::now();
+        let mut curve = Vec::new();
+        while start.elapsed() < CURVE_LEN {
+            if let Ok(Some(fb)) = m.transact(&stop, REPLY_WAIT) {
+                curve.push((
+                    start.elapsed().as_millis(),
+                    fb.speed_rpm.abs(),
+                    fb.current_a.abs(),
+                ));
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+        curves.push(curve);
+
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(700));
+    }
+
+    m.safe_stop();
+
+    let (a, b) = (&curves[0], &curves[1]);
+    eprintln!(
+        "\n{:>8}  {:>18}  {:>18}  {:>6}",
+        "sample",
+        format!("accel {} (rpm/A)", PROBES[0]),
+        format!("accel {} (rpm/A)", PROBES[1]),
+        "delta"
+    );
+    let mut worst: i16 = 0;
+    for i in 0..a.len().min(b.len()) {
+        let d = (a[i].1 - b[i].1).abs();
+        worst = worst.max(d);
+        eprintln!(
+            "{:>5} ms  {:>11} / {:>4.2}  {:>11} / {:>4.2}  {:>6}",
+            a[i].0, a[i].1, a[i].2, b[i].1, b[i].2, d
+        );
+    }
+    eprintln!(
+        "\nWorst per-sample divergence between accel {} and accel {}: {worst} RPM.",
+        PROBES[0], PROBES[1]
+    );
+    eprintln!(
+        "{}",
+        if worst <= 5 {
+            "CONFIRMED: the curves are the same. The accel byte does not affect \
+             deceleration — stop_ramp_capture's single-point result was not an artefact."
+        } else {
+            "CONTRADICTED: the curves diverge, so the byte DOES affect deceleration \
+             and stop_ramp_capture's handover sample was misleading. Investigate."
+        }
+    );
+}
