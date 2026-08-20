@@ -816,6 +816,219 @@ fn stop_ramp_curve_capture() {
     );
 }
 
+/// Is the acceleration ramp a straight line, or a first-order lag? The caveat
+/// [`accel_direction_capture`] leaves open: time-to-90% alone cannot
+/// distinguish `rate ∝ 1/accel` (a linear ramp to setpoint) from `τ ∝ accel`
+/// (an exponential approach) — the seven summary rows fit both models. The
+/// published "~3.6 ms per RPM per unit" law assumes the straight line, so this
+/// dumps the full spin-up curve at two mid-range accel values and inspects the
+/// shape directly.
+///
+/// Two discriminators, both immune to the fixed ~60 ms start-up offset because
+/// they use only *differences* between crossing times:
+///
+/// - **Quartile-span ratio** `(t75 − t50) / (t50 − t25)`, where `tN` is the
+///   first crossing of N% of setpoint. A linear ramp gives 1.0; a first-order
+///   lag gives `ln(2) / ln(4/3) ≈ 1.71`.
+/// - **Chord bow**: how far the measured curve rises above the straight chord
+///   drawn from the 25% crossing to the 90% crossing, as a percentage of
+///   setpoint. A straight ramp bows ~0%; a first-order lag bows ~12%.
+///
+/// ```sh
+/// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
+///   cargo test -p m0601 --test hardware -- --ignored --nocapture accel_curve_capture
+/// ```
+///
+/// **Spins the wheel, slowly and for several seconds. Get it off the ground.**
+#[test]
+#[ignore = "needs hardware AND spins the wheel: set M0601_PORT and M0601_ALLOW_MOTION=1"]
+fn accel_curve_capture() {
+    let _guard = port_guard();
+    assert_eq!(
+        std::env::var("M0601_ALLOW_MOTION").as_deref(),
+        Ok("1"),
+        "accel_curve_capture spins the wheel; set M0601_ALLOW_MOTION=1 to allow it \
+         (make sure the wheel is off the ground)"
+    );
+
+    /// Mid-range values, where the ramp is slow enough that its shape spans
+    /// many samples but the trial still finishes in seconds. The extremes are
+    /// no better: at `1` the whole ramp fits in ~45 samples, and at `255` a
+    /// trial would run minutes.
+    const PROBES: [u8; 2] = [5, 20];
+    const SAMPLE_GAP: Duration = Duration::from_millis(5);
+    const REPLY_WAIT: Duration = Duration::from_millis(4);
+    /// Stop sampling once the wheel is essentially at setpoint.
+    const DONE_FRAC: f64 = 0.98;
+
+    let target = test_rpm();
+
+    let mut guard = StopOnDrop(Some(open()));
+    let m = guard.0.as_mut().expect("just constructed");
+    m.set_mode(Mode::Velocity).expect("set velocity mode");
+
+    eprintln!(
+        "\naccel curve capture: step 0 -> {target} RPM at accel {:?}, full curve\n",
+        PROBES
+    );
+
+    // (elapsed_ms, signed rpm, signed amps) per probe.
+    let mut curves: Vec<Vec<(u128, i16, f32)>> = Vec::new();
+
+    for accel in PROBES {
+        // Start every trial from a genuine rest, with the brake released —
+        // same preamble as accel_direction_capture, for the same reason.
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(800));
+        if let Ok(Some(fb)) = m.query() {
+            assert!(
+                fb.speed_rpm.abs() < 5,
+                "wheel did not come to rest before the accel {accel} trial: {} RPM",
+                fb.speed_rpm
+            );
+        }
+        m.set_mode(Mode::Velocity).expect("set velocity mode");
+        let release = m0601::protocol::frame_velocity(m.id(), 0, accel);
+        let _ = m.transact(&release, REPLY_WAIT);
+        std::thread::sleep(Duration::from_millis(200));
+
+        let step = m0601::protocol::frame_velocity(m.id(), target, accel);
+        let hex: Vec<String> = step.iter().map(|b| format!("{b:02X}")).collect();
+        eprintln!(
+            "accel {accel:>3}: TX {}  (byte 6 = 0x{:02X})",
+            hex.join(" "),
+            step[6]
+        );
+        assert_eq!(step[6], accel, "the accel byte must reach the wire");
+
+        // Cap from the provisional law (t90 ≈ 62 ms + 3.56 ms × 0.9·target ×
+        // accel), doubled, plus slack — generous enough that only a wheel far
+        // slower than either model predicts ever hits it.
+        let cap_ms = 500.0 + 2.0 * (62.0 + 3.56 * 0.9 * f64::from(target) * f64::from(accel));
+        let cap = Duration::from_millis(cap_ms as u64);
+        let done = f64::from(target) * DONE_FRAC;
+
+        let start = Instant::now();
+        let mut curve = Vec::new();
+        while start.elapsed() < cap {
+            if let Ok(Some(fb)) = m.transact(&step, REPLY_WAIT) {
+                curve.push((start.elapsed().as_millis(), fb.speed_rpm, fb.current_a));
+                if f64::from(fb.speed_rpm) >= done {
+                    break;
+                }
+            }
+            std::thread::sleep(SAMPLE_GAP);
+        }
+        curves.push(curve);
+
+        m.safe_stop();
+        std::thread::sleep(Duration::from_millis(700));
+    }
+
+    m.safe_stop();
+
+    // First crossing of `frac`·target, linearly interpolated between the
+    // samples that straddle it.
+    let crossing = |curve: &[(u128, i16, f32)], frac: f64| -> Option<f64> {
+        let want = f64::from(target) * frac;
+        let mut prev: Option<(u128, i16)> = None;
+        for &(t, rpm, _) in curve {
+            let r = f64::from(rpm);
+            if r >= want {
+                return Some(match prev {
+                    Some((pt, prpm)) if f64::from(prpm) < want && r > f64::from(prpm) => {
+                        let pr = f64::from(prpm);
+                        pt as f64 + (t - pt) as f64 * (want - pr) / (r - pr)
+                    }
+                    _ => t as f64,
+                });
+            }
+            prev = Some((t, rpm));
+        }
+        None
+    };
+
+    let mut ratios: Vec<f64> = Vec::new();
+    for (accel, curve) in PROBES.iter().zip(&curves) {
+        // A threadbare curve, or one that never reached 90%, cannot support a
+        // shape verdict — fail loudly rather than judging from thin data.
+        assert!(
+            curve.len() >= 30,
+            "accel {accel}: only {} samples — were the replies dropped?",
+            curve.len()
+        );
+        let (t25, t50, t75, t90) = (
+            crossing(curve, 0.25),
+            crossing(curve, 0.50),
+            crossing(curve, 0.75),
+            crossing(curve, 0.90),
+        );
+        let (Some(t25), Some(t50), Some(t75), Some(t90)) = (t25, t50, t75, t90) else {
+            panic!(
+                "accel {accel}: the wheel never crossed 90% of setpoint inside the \
+                 window — no shape verdict possible. Longer cap, or lower M0601_TEST_RPM."
+            );
+        };
+
+        // Print the curve, decimated to ~48 rows; the crossings above use
+        // every sample.
+        let step_by = (curve.len() / 48).max(1);
+        eprintln!(
+            "\naccel {accel} curve ({} samples, every {step_by}th shown):",
+            curve.len()
+        );
+        for (t, rpm, a) in curve.iter().step_by(step_by) {
+            eprintln!("  {t:>6} ms  {rpm:>4} rpm  {a:+.2} A");
+        }
+
+        let ratio = (t75 - t50) / (t50 - t25);
+        ratios.push(ratio);
+
+        // Chord bow: maximum rise of the curve above the straight line from
+        // the 25% crossing to the 90% crossing, as % of setpoint.
+        let slope = (0.90 - 0.25) * f64::from(target) / (t90 - t25);
+        let mut bow: f64 = 0.0;
+        for &(t, rpm, _) in curve {
+            let t = t as f64;
+            if t >= t25 && t <= t90 {
+                let chord = 0.25 * f64::from(target) + slope * (t - t25);
+                bow = bow.max(f64::from(rpm) - chord);
+            }
+        }
+        let bow_pct = bow / f64::from(target) * 100.0;
+
+        // ms per RPM per accel unit over the mid-ramp, for the published law.
+        let ms_per_rpm_unit = (t75 - t25) / (0.5 * f64::from(target)) / f64::from(*accel);
+
+        eprintln!(
+            "accel {accel}: t25 {t25:.0} ms, t50 {t50:.0} ms, t75 {t75:.0} ms, t90 {t90:.0} ms\n\
+             \x20         span ratio (t75-t50)/(t50-t25) = {ratio:.2} \
+             (linear 1.00, first-order lag 1.71)\n\
+             \x20         chord bow +{bow_pct:.1}% of setpoint (linear ~0%, lag ~12%)\n\
+             \x20         mid-ramp slope: {ms_per_rpm_unit:.2} ms per RPM per accel unit"
+        );
+    }
+
+    eprintln!();
+    if ratios.iter().all(|r| *r < 1.25) {
+        eprintln!(
+            "VERDICT: LINEAR RAMP. The approach to setpoint is a straight line, so \
+             the published time-per-RPM law (protocol.md) stands as stated."
+        );
+    } else if ratios.iter().all(|r| *r > 1.45) {
+        eprintln!(
+            "VERDICT: FIRST-ORDER LAG. The approach is asymptotic, so the published \
+             law must be restated as a time constant (τ ∝ accel), not a linear ramp \
+             rate. Update protocol.md and protocol.rs."
+        );
+    } else {
+        eprintln!(
+            "VERDICT: AMBIGUOUS — the two accel values disagree, or a ratio landed \
+             between the models. Inspect the printed curves before touching the docs."
+        );
+    }
+}
+
 /// One telemetry sample from a phase capture: elapsed ms, signed RPM, signed
 /// amps, raw fault byte.
 type Sample = (u128, i16, f32, u8);
