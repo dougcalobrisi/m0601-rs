@@ -835,10 +835,10 @@ fn winding_temp(m: &mut M0601) -> Option<u8> {
 /// Part A logs signed current and fault bits through steady running, a
 /// velocity-0 stop, and a brake stop. Part B is a thermal probe: equal numbers
 /// of spin-ups, differing only in how the wheel returns to rest (braked vs
-/// coasting), to see whether braking dissipates measurably in the windings.
-/// Part B is expected to be inconclusive — an unloaded rotor at this speed
-/// carries little energy and the temperature field is 1 °C granular — so treat
-/// a null result there as "too small to see", not as evidence of absence.
+/// coasting), to see whether braking heats the motor measurably. Part B is
+/// expected to be inconclusive — the temperature field is 1 °C granular — so
+/// treat a null result there as "too small to see", not as evidence of
+/// absence.
 ///
 /// ```sh
 /// M0601_PORT=/dev/ttyUSB0 M0601_ALLOW_MOTION=1 \
@@ -962,7 +962,7 @@ fn braking_current_capture() {
     //
     // Both trials perform the SAME number of spin-ups, so spin-up heating
     // cancels. They differ only in how the wheel returns to rest. If braking
-    // dissipates in the windings, the braked trial should end hotter.
+    // heats the motor, the braked trial should end hotter.
     eprintln!("\n== Part B: thermal probe ({CYCLES} cycles each) ==\n");
 
     let thermal = |m: &mut M0601, braked: bool| -> (Option<u8>, Option<u8>, f64) {
@@ -1078,8 +1078,8 @@ fn braking_current_capture() {
             } else if db > dc {
                 eprintln!(
                     "    Braking heats the winding {} °C more than coasting for the same \
-                     number of spin-ups — consistent with the energy being dissipated in \
-                     the motor rather than returned to the bus.",
+                     number of spin-ups. The trials also differ in duration, so confirm \
+                     that before drawing any conclusion from it.",
                     db - dc
                 );
             } else {

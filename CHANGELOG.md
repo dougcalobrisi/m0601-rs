@@ -71,9 +71,9 @@ lockstep; `m0601-quad` is a sample and is not published.
 
   The velocity-0 rounds are still worth their 100 ms: they shed nearly half the speed
   (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM). Where that
-  energy goes is unresolved — consistent with dynamic braking, but the protocol does not
-  expose phase current, and a thermal probe cannot resolve it at this scale: the braking
-  energy is roughly 1% of the heat each spin-up dumps in the same cycle.
+  energy goes is not established: the protocol exposes no phase current, and a thermal
+  probe on an unloaded wheel could not separate braking heat from the spin-up preceding
+  it.
 
 ### Changed
 

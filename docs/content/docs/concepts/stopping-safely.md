@@ -66,11 +66,11 @@ crate's pacing, and tightening the reply window past ~1.1 ms loses the replies e
 rows as *what the current field reports*, which is what a monitor sees, and not as a
 measurement of what the hardware is doing.
 
-Where the braking energy actually goes therefore remains open. It is consistent with
-dynamic braking — windings shorted, dissipating internally, invisible to a torque-current
-readout — but that is a hypothesis. The protocol exposes no phase current, a thermal
-probe at this scale cannot resolve it (the braking energy is ~1% of the heat each
-spin-up dumps in the same cycle), and settling it needs a meter on the supply rail.
+Where the braking energy actually goes is **not established**, and this page does not
+guess. The protocol exposes no phase current, and a thermal probe on an unloaded wheel
+could not separate braking heat from the spin-up that precedes it. Settling it needs a
+meter on the supply rail: a bench supply cannot sink current, so genuine regeneration
+would show as a bus-voltage rise during a stop.
 
 The brake rounds still deliver the firm final hold, and they are what actually brings the
 wheel to rest: velocity-0 alone takes ~370 ms, the brake ~250 ms, and coasting more than
