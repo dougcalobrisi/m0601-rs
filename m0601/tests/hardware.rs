@@ -531,6 +531,12 @@ fn stop_ramp_capture() {
                     at_handover = Some(fb.speed_rpm.abs());
                 }
                 if fb.speed_rpm.abs() < REST_RPM {
+                    // Rest before the handover is a measured 0 at the
+                    // handover, not a missing sample — leaving it `None`
+                    // would silently drop this style from the verdict.
+                    if at_handover.is_none() {
+                        at_handover = Some(0);
+                    }
                     time_to_rest = Some(elapsed);
                     break;
                 }
@@ -1460,10 +1466,11 @@ fn braking_current_fast_capture() {
         "Compare against braking_current_capture at ~9 ms: velocity-0 peak 0.63 A, \
          mean 0.03 A; brake peak 1.99 A, mean 0.16 A.\n\
          \n\
-         Expect velocity-0 to reproduce (it does: ~0.69 A peak, ~0.05 A mean) and the \
-         BRAKE to come out higher (~2.28 A peak, ~0.30 A mean, several consecutive \
-         samples over 1 A). That difference is the point: the brake transient IS \
-         aliased at ~9 ms, which proves aliasing is real on this link. Velocity-0 \
+         Reference run (one unloaded motor, one rig): velocity-0 reproduced at \
+         ~0.69 A peak, ~0.05 A mean, while the BRAKE came out higher at ~2.28 A \
+         peak, ~0.30 A mean, several consecutive samples over 1 A. If this rig \
+         shows the same split, the brake transient IS aliased at ~9 ms, which \
+         proves aliasing is real on this link. Velocity-0 \
          reproducing is therefore reassuring but NOT proof — no achievable rate here \
          can resolve a sub-4 ms event. Claims about this phase must be about what the \
          telemetry reports, not about what crosses the bus."
