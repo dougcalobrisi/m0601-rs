@@ -171,7 +171,7 @@ motor's fastest `1`) — a keystroke commands a large step, and the sharpest ram
 can trip the 3 A overcurrent protection on a loaded wheel. Larger is gentler;
 `0` is **not** a middle setting, it selects the motor's default, which measures
 identical to `1`. Keep it small — 120 RPM takes ~2 s at `5` and over 3 s at
-`20`. See the [protocol notes](docs/content/docs/protocol.md). The *stop* ramp
+`20`. See the [protocol notes](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md). The *stop* ramp
 is separate; see below.
 
 `P` is refused at 10 RPM or above, and also when no telemetry has arrived —
