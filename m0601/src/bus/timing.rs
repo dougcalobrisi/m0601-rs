@@ -20,15 +20,41 @@ const SET_ID_SETTLE: Duration = Duration::from_millis(500);
 const SAFE_STOP_GAP: Duration = Duration::from_millis(20);
 /// Acceleration byte for the velocity-0 rounds of a stop sequence.
 ///
-/// **Not** the fastest ramp (`1`): a hard ramp-to-zero on a loaded wheel can
-/// trip the motor's own 3 A bus-overcurrent protection *during* the stop, at
-/// which point it stops responding to drive commands and the controlled
-/// deceleration is defeated — the opposite of what a safe stop wants. A
-/// moderate ramp decelerates firmly without provoking that trip, and the
-/// brake rounds that follow still deliver the hard final hold. `5` is a
-/// firm-but-safe middle of that range; override it with
-/// [`Bus::with_stop_accel`](crate::Bus::with_stop_accel) if a heavier or
-/// lighter chassis wants a different deceleration.
+/// **Measured to make no difference.** `stop_ramp_capture`
+/// (`m0601/tests/hardware.rs`) sweeps this byte across its whole range during
+/// the velocity-0 rounds: an unloaded wheel stopping from 120 RPM sits at
+/// 63 RPM after 100 ms at accel `0` and 64 RPM at accel `255` — a 1 RPM
+/// spread, when the same two values differ by more than 250x on spin-*up*.
+/// The byte shapes acceleration only. `5` is kept because it is what the
+/// crate has always sent and costs nothing, not because it is gentler.
+///
+/// What the velocity-0 rounds *do* accomplish is real and worth keeping: the
+/// same capture leaves a coasting wheel at 119 RPM after 100 ms, against
+/// 63 RPM under velocity-0 frames. The ramp phase sheds nearly half the speed
+/// before the brake rounds begin. It simply is not tunable.
+///
+/// Note which phase carries the current. `braking_current_capture` logs it
+/// signed: the velocity-0 rounds show a single −0.63 A transient at the
+/// setpoint change and then **~0.03 A mean** while the wheel sheds 60 RPM,
+/// whereas the brake rounds show a −1.99 A transient followed by ~0.6–0.85 A
+/// of sustained work. Unloaded, against a 3 A trip.
+///
+/// The consequence that holds firmly: a velocity-0 stop is effectively
+/// **invisible** to any monitor watching reported current, so a low reading
+/// during a stop does not mean nothing is happening. If a stop ever does trip
+/// overcurrent, look at the brake — measured up to −2.28 A — and note that
+/// this byte is not the lever on it either.
+///
+/// What is *not* established is where the energy goes. Telemetry on this link
+/// cannot sample faster than ~8 ms (the limit is the USB-serial quantum, not
+/// the crate's pacing), and the brake transient is demonstrably aliased at
+/// that rate — it reads 1.99 A or 2.28 A depending on which samples land on
+/// it. So "the current telemetry reports almost nothing" is a statement about
+/// the telemetry, not proof that little crosses the bus.
+///
+/// One unloaded motor, one firmware. Under load the numbers will differ; that
+/// the byte is inert on deceleration is the part unlikely to change.
+/// [`Bus::with_stop_accel`](crate::Bus::with_stop_accel) still sets it.
 const SAFE_STOP_ACCEL: u8 = 5;
 
 /// Default minimum idle gap enforced between frames on a bus — see
@@ -44,7 +70,13 @@ pub const DEFAULT_MIN_GAP: Duration = Duration::from_micros(2500);
 
 /// Default acceleration byte for
 /// [`M0601::drive_velocity`](crate::M0601::drive_velocity) — the motor's
-/// *fastest* ramp. Override the default per handle with
+/// *fastest* ramp.
+///
+/// `1` is the motor's own default: the wiki says so ("when set to 0, it would
+/// be the default value as 1"), and hardware measurement agrees — `0` and `1`
+/// reach setpoint in the same time. Larger values are gentler; see
+/// [`crate::protocol::frame_velocity`] for the measured numbers. Override the
+/// default per handle with
 /// [`M0601::with_default_accel`](crate::M0601::with_default_accel), or per
 /// call with
 /// [`M0601::drive_velocity_accel`](crate::M0601::drive_velocity_accel).
@@ -66,8 +98,9 @@ pub struct BusTiming {
     /// no frame overlaps the reply the previous one elicited.
     pub min_gap: Duration,
     /// Acceleration byte for the velocity-0 rounds of a controlled stop.
-    /// **Not** the fastest ramp (`1`): a hard ramp-to-zero on a loaded wheel
-    /// can trip the motor's 3 A protection mid-stop and defeat the stop.
+    /// Defaults to `5`, but **measured to have no effect on deceleration** —
+    /// the byte shapes acceleration only. Still sent, in case a different
+    /// firmware or a loaded wheel behaves otherwise.
     pub stop_accel: u8,
     /// Gap between the rounds of a [`M0601::safe_stop`](crate::M0601::safe_stop)
     /// sequence.

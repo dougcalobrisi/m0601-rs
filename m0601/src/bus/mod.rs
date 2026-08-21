@@ -200,8 +200,10 @@ impl<T: Transport> Bus<T> {
     /// stop ([`M0601::safe_stop`] / [`safe_stop_all`](Self::safe_stop_all)).
     ///
     /// Shared-port builder, exactly like [`with_min_gap`](Self::with_min_gap).
-    /// Defaults to a moderate ramp (see [`BusTiming`]); a hard ramp (`1`) on a
-    /// loaded wheel can trip the motor's overcurrent protection mid-stop.
+    /// Defaults to `5` (see [`BusTiming`]) — but note that sweeping this byte
+    /// across its whole range changes an unloaded stop by 1 RPM, so it is
+    /// very likely inert. It is kept and still sent because the measurement is
+    /// one motor on one firmware, not because tuning it is known to help.
     #[must_use]
     pub fn with_stop_accel(self, accel: u8) -> Self {
         lock(&self.port).timing.stop_accel = accel;

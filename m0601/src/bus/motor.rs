@@ -397,17 +397,23 @@ impl<T: Transport> M0601<T> {
 
     /// Send one velocity drive frame with an explicit acceleration.
     ///
-    /// `0` selects the motor's default; `1` — what
-    /// [`drive_velocity`](Self::drive_velocity) uses — is the *fastest*
-    /// ramp, not a gentle one, and larger values ramp more gently. A large
-    /// step at `accel: 1` draws a current spike that can trip the motor's
-    /// 3 A bus-overcurrent protection on a loaded wheel; raise the value to
-    /// soften it.
+    /// **Larger is gentler.** `1` — what
+    /// [`drive_velocity`](Self::drive_velocity) uses — is the *fastest* ramp,
+    /// and `0` selects the motor's default, which measures identical to `1`
+    /// rather than being a neutral middle. A large step at that ramp draws a
+    /// current spike that can trip the motor's 3 A bus-overcurrent protection
+    /// on a loaded wheel; raise the value to soften it.
     ///
-    /// The vendor sources also give this byte a unit ("1 RPM per 0.1 ms")
-    /// that reads as a rate, which contradicts the ramp direction above.
-    /// That contradiction is unresolved, so only the direction is documented
-    /// — see [`frame_velocity`](crate::protocol::frame_velocity).
+    /// Raise it modestly: the ramp slows fast. Measured on an unloaded wheel,
+    /// a step to 120 RPM takes ~0.45 s at `1`, ~2 s at `5`, and had not
+    /// arrived after 3 s at `20`. `3`–`5` is a useful softening; `40` is
+    /// nearly a standstill. See
+    /// [`frame_velocity`](crate::protocol::frame_velocity) for the full table.
+    ///
+    /// The accel byte bounds how fast the motor chases the setpoint, not how
+    /// fast *you* move the setpoint — for that, and for a mitigation that does
+    /// not depend on the motor's ramp at all, see
+    /// [`SlewLimiter`](crate::SlewLimiter).
     pub fn drive_velocity_accel(&mut self, rpm: i16, accel: u8) -> Result<()> {
         let rpm = if self.mirrored {
             rpm.saturating_neg()

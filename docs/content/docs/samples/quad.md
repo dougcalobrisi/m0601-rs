@@ -85,9 +85,9 @@ reply_wait_ms = 2.0    # per-poll reply window; measure it, don't guess
 
 [limits]
 max_rpm         = 120    # 100% throttle commands exactly this
-accel           = 5      # NEVER 1 on a vehicle — see below
+accel           = 5      # NEVER 0 or 1 on a vehicle — see below
 ramp_rpm_per_s  = 300.0  # host-side setpoint ramp; all-stop BYPASSES it
-current_trip_a  = 2.5    # monitor trip, not a command clamp
+current_trip_a  = 2.5    # monitor trip, not a command clamp (see note below)
 current_trip_ms = 400.0  # debounce — start-up inrush is normal and shorter
 stale_ms        = 500.0  # telemetry older than this: warn
 dead_ms         = 1500.0 # telemetry older than this: stop the vehicle
@@ -106,8 +106,12 @@ mirrored = false    # the SKU's mechanical build (FIT1042 left / FIT1038 right)
 
 Three of those values carry the lessons this repo learned the hard way:
 
-- **`accel = 5`, never `1`.** `1` is the motor's *fastest* ramp, and four wheels
-  launching off one supply at that ramp can trip the 3 A bus-overcurrent protection.
+- **`accel = 5`, never `0` or `1`.** Larger is gentler, and both `0` and `1` are the
+  motor's *fastest* ramp — `0` selects the motor default, which
+  [measures identical to `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources).
+  Four wheels launching off one supply at that ramp can trip the 3 A bus-overcurrent
+  protection, so `check` warns on either value. Don't overshoot the other way: 120 RPM
+  takes ~2 s at `5` and over 3 s at `20`, so past ~10 the rover crawls.
 - **`cycle_ms = 18`, not 20.** Every wheel needs its drive frame at ≥50 Hz, so the
   cycle must stay *under* 20 ms; 18 leaves 2 ms of margin. A poll cycle consumes
   ~17.2 ms of that, which is why `check` says so out loud:
@@ -120,6 +124,15 @@ Three of those values carry the lessons this repo learned the hard way:
   [Budgeting the wire]({{< relref "../library/budgeting" >}}). The 20 ms floor caps
   the total budget, so more cycle slack costs coast margin and vice versa; only a
   *measured* smaller `min_gap` buys both.
+- **The current trip is blind to a velocity-0 stop.** That phase reports ~0.03 A
+  while the wheel sheds real speed
+  ([measured]({{< relref "../concepts/stopping-safely" >}})), so a low reading during
+  a stop is not evidence of an idle wheel. The brake phase, by contrast, hits −2.28 A
+  for ~16 ms unloaded — uncomfortably close to this 2.5 A threshold, and a *floor*
+  rather than a peak, since telemetry cannot sample faster than ~8 ms. That is why
+  `current_trip_ms` debouncing matters: without it the brake transient alone could
+  trip the vehicle.
+
 - **`invert` XOR `mirrored`.** `invert` is what you observed; `mirrored` is the SKU's
   build. Only their XOR matters, and the dashboard shows the effective direction as a
   `REV` badge — so you can record both truthfully instead of fudging one to fix the
@@ -143,7 +156,10 @@ Read these in the source when you build your own multi-motor loop:
   then stop guard), and SIGINT/SIGTERM/SIGHUP. On `SIGKILL` all four coast — which is
   documented in the crate, because a coasting rover *rolls*.
 - **`BusTiming` filled from config.** `Config::bus_timing()` feeds `limits.accel`
-  into `stop_accel`, so a wheel decelerates on the same ramp it launched on.
+  into `stop_accel`, so both are configured in one place — though the stop half is
+  very likely a no-op, since the accel byte
+  [measures inert on deceleration]({{< relref "../concepts/stopping-safely" >}}). It
+  is wired up so a rig that does respond is configured correctly.
 - **Latched faults with manual re-arm** (`safety.rs`), plus staleness tiers: one
   missed poll is expected, `stale_ms` warns, `dead_ms` stops the vehicle — because
   three driving wheels and one unknown wheel yaws the machine.

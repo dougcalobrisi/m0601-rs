@@ -28,7 +28,7 @@ want one command that does one thing and stops itself cleanly.
 
 ```sh
 m0601 drive velocity --rpm -80 --secs 3     # reverse at 80 RPM for 3 s
-m0601 drive velocity --rpm 200 --accel 40   # softer ramp
+m0601 drive velocity --rpm 200 --accel 5    # softer ramp (~3.6 ms/RPM per unit)
 m0601 drive current  --amps 1.5 --secs 2    # hold ~1.5 A of torque
 m0601 drive position --deg 180              # rotate to 180° and hold
 ```
@@ -44,10 +44,15 @@ Either way the motor brakes on exit, so back-to-back scripted runs have no coast
 gap between them.
 
 **`--accel` (velocity only) is a footgun worth respecting.** `1` is the motor's
-*fastest* ramp and the default; larger is gentler; `0` is the motor's own default.
+*fastest* ramp and the default; larger is gentler. `0` is **not** the middle it looks
+like — it selects the motor's own default, which
+[measures identical to `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources).
+
 A big velocity step at accel 1 on a loaded wheel can spike current into the 3 A
-protection and trip it. If a run keeps faulting out the instant it starts, soften
-the ramp.
+protection and trip it. If a run keeps faulting out the instant it starts, soften the
+ramp — but modestly: a step to 120 RPM takes ~0.45 s at `1`, ~2 s at `5`, and over 3 s
+at `20`, so `3`–`5` is the useful range and a run at `--accel 40` will look like a
+motor that never spun up.
 
 ## Position-mode pre-flight check
 

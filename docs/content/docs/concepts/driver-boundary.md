@@ -116,8 +116,9 @@ outermost is yours:
    owns it:
    - the drive frame's `accel` byte, per call via `drive_velocity_accel` or as a default
      via `Bus::with_default_accel` — the motor's own ramp toward the setpoint;
-   - `BusTiming::stop_accel` — the same ramp on the way down, defaulted to a moderate
-     value so a hard stop can't trip the protection mid-stop;
+   - `BusTiming::stop_accel` — nominally the same ramp on the way down, though it
+     [measures inert]({{< relref "stopping-safely" >}}): the byte shapes acceleration
+     only, and a stop decelerates the same at `0` as at `255`;
    - [`SlewLimiter`](https://docs.rs/m0601/latest/m0601/struct.SlewLimiter.html) — a
      bound on how fast *you* move the setpoint, for the step changes a keystroke, a
      joystick snap, or a mixer output produces. It holds no clock; you pass the elapsed

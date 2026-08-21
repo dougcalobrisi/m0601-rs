@@ -168,8 +168,11 @@ Do not walk away from a spinning wheel expecting it to stop on its own.
 
 `--accel` sets the ramp used for active driving (default `3`, gentler than the
 motor's fastest `1`) — a keystroke commands a large step, and the sharpest ramp
-can trip the 3 A overcurrent protection on a loaded wheel. The *stop* ramp is
-separate; see below.
+can trip the 3 A overcurrent protection on a loaded wheel. Larger is gentler;
+`0` is **not** a middle setting, it selects the motor's default, which measures
+identical to `1`. Keep it small — 120 RPM takes ~2 s at `5` and over 3 s at
+`20`. See the [protocol notes](docs/content/docs/protocol.md). The *stop* ramp
+is separate; see below.
 
 `P` is refused at 10 RPM or above, and also when no telemetry has arrived —
 without a reading the speed is unknown, not zero. Entering position mode
@@ -182,9 +185,10 @@ requested one if the two ever disagree.
 Safety: the wheel is stopped on every exit path — quit keys, panics,
 SIGINT/SIGTERM/SIGHUP (e.g. a dropped SSH session). `safe_stop` sends 5×
 mode-switch-to-velocity, then 5× velocity-0, then 5× brake, ~300 ms in all;
-the ramp to zero uses a moderate acceleration by default (tunable via
-`Bus::with_stop_accel` / `BusTiming`) so a hard step can't trip the
-overcurrent protection mid-stop, and the brake rounds still hold it firmly.
+the velocity-0 rounds shed nearly half the speed (measured: 120 → ~64 RPM on
+an unloaded wheel, against 119 RPM for coasting) and the brake rounds finish
+the job. The `stop_accel` byte is tunable via `Bus::with_stop_accel` /
+`BusTiming` but measures inert — `0` and `255` decelerate identically.
 On SIGKILL or power loss the polling simply stops and the motor coasts, per
 protocol. Keep the wheel clear before spinning it.
 
@@ -279,8 +283,10 @@ The `spin_and_stop` hardware test additionally requires
 
 See [the protocol reference](https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md) for the full spec with per-claim sourcing.
 
+- [DDT M0601C_111 manual (PDF)](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf) — the manufacturer's 16-page datasheet
+- [DDTRobot/motor-driver-examples](https://github.com/DDTRobot/motor-driver-examples) — the manufacturer's own sample code
 - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
-- [DDT M0601C-111 vendor sample code](https://github.com/tech-life-hacking/DDT_M0601C_111)
+- [DDT_M0601C_111, third-party samples (links the manual)](https://github.com/tech-life-hacking/DDT_M0601C_111)
 - [navigation_robot, an independent C driver with test vectors](https://github.com/Il1yasviel/navigation_robot)
 - [MotorLink, an independent implementation](https://github.com/MukeshSankhla/MotorLink)
 

@@ -34,14 +34,26 @@ reply_wait_ms = 2.0 # per-poll reply window. Short on purpose: on a poll
 
 [limits]
 max_rpm = 120          # 100% throttle commands exactly this (wheel max 330)
-accel = 5              # NEVER 1 on a vehicle: a big step at accel 1 can trip
-                       # the motor's 3 A bus-overcurrent on a loaded wheel,
-                       # and four wheels launch off one supply. 5 is
-                       # empirical — the vendor sources contradict each other
-                       # on this byte's unit; raise it if launches still trip.
-ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
-                       # ramp. All-stop and fault stops BYPASS it.
-current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp
+accel = 5              # NEVER 0 or 1 on a vehicle: both are the motor's
+                       # FASTEST ramp (0 = motor default, measured identical
+                       # to 1), and a big step there can trip the 3 A
+                       # bus-overcurrent on a loaded wheel with four wheels
+                       # launching off one supply. Larger is gentler, but it
+                       # slows fast — measured, 120 RPM takes ~0.45 s at 1,
+                       # ~2 s at 5, and >3 s at 20. Raise it if launches
+                       # still trip; past ~10 the rover crawls.
+ramp_rpm_per_s = 300.0 # host-side setpoint ramp, applied in series with
+                       # `accel` above. With accel = 5 the motor's own ramp
+                       # (~60 RPM/s) is the slower one and dominates; this
+                       # value only bites when set below that. All-stop and
+                       # fault stops BYPASS it.
+current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp.
+                       # Blind to a velocity-0 stop: that phase reports ~0.03 A
+                       # while shedding real speed. The brake transient hits
+                       # -2.28 A unloaded for ~16 ms — closer to this 2.5 A
+                       # threshold than is comfortable, and that figure is a
+                       # floor, since telemetry cannot sample faster than ~8 ms.
+                       # The debounce below is what keeps it from tripping.
 current_trip_ms = 400.0 # debounce; start-up inrush is normal and shorter
 stale_ms = 500.0       # telemetry older than this: warn (one missed poll is
                        # expected — each wheel is polled every 8th cycle)

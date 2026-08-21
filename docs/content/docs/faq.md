@@ -93,11 +93,21 @@ Almost always the 3 A bus-overcurrent protection, tripped by too aggressive a ra
 `drive_velocity` uses acceleration `1`, the motor's *fastest* ramp, and so does the
 CLI's `drive velocity`; a big step at accel 1 on a loaded wheel spikes current past
 3 A. (`control` is the exception — it defaults to `3`, deliberately gentler, because a
-single keystroke there commands a large instantaneous step.) Use
-`drive_velocity_accel` with a larger accel byte (gentler), or `drive velocity --accel 40`
-(`--accel` lives on the `velocity` subcommand, not on `drive` itself). The
-protection auto-resets about five seconds after the *trip*, so a wheel that is still
-loaded simply trips again.
+single keystroke there commands a large instantaneous step.)
+
+Soften it with `drive_velocity_accel` or `drive velocity --accel n` (`--accel` lives on
+the `velocity` subcommand, not on `drive` itself). Larger is gentler — but **`0` is
+not**: it selects the motor's default, which
+[measures identical to `1`]({{< relref "protocol" >}}#known-contradictions-between-sources),
+so it is the harshest setting rather than a safe middle. Keep the number small either
+way: a step to 120 RPM takes ~0.45 s at `1`, ~2 s at `5`, and over 3 s at `20`, so
+`3`–`5` is the useful range and `40` is nearly a standstill.
+
+The other lever, which works no matter what the motor's ramp is doing, is to make the
+*step* smaller: ramp the setpoint host-side with
+[`SlewLimiter`]({{< relref "concepts/setpoint-shaping" >}}) rather than commanding a
+jump. The protection auto-resets about five seconds after the *trip*, so a wheel that
+is still loaded simply trips again.
 
 ## Out-of-range values: clamp vs. reject {#out-of-range}
 

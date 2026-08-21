@@ -65,10 +65,13 @@ velocity mode *before* it sends anything.
 `1`–`5` set a *sustained* setpoint that holds until you press `S`, `K`, or `Q`, or a
 signal arrives. Do not walk away from a spinning wheel expecting it to stop itself.
 
-**3. Acceleration `1` is the motor's *fastest* ramp, not its gentlest.** A large
-velocity step at accel 1 on a loaded wheel can spike current past the 3 A
-bus-overcurrent protection and drop the wheel until it auto-resets ~5 s later. On a
-vehicle, where several wheels launch off one supply, never use 1.
+**3. Acceleration `1` is the motor's *fastest* ramp — and so is `0`.** A large
+velocity step at that ramp on a loaded wheel can spike current past the 3 A
+bus-overcurrent protection and drop the wheel until it auto-resets ~5 s later.
+Larger values are gentler. The trap is `0`: it selects the motor's own default, which
+[measures identical to `1`]({{< relref "protocol" >}}#known-contradictions-between-sources),
+so it is the harshest setting rather than a safe neutral. On a vehicle, where several
+wheels launch off one supply, never use `0` or `1`.
 
 **4. Believe the reported mode, not the requested one.** `control` shows the mode the
 *motor* reports and turns the line red when the two disagree — because a dashboard
