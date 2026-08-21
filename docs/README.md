@@ -47,9 +47,9 @@ hugo --minify      # static site into docs/public/ (gitignored)
 ## CI and deployment
 
 The site lives in its own workflow, `.github/workflows/docs-site.yml`, separate
-from the Rust CI suite — the Rust jobs run on every push and PR, whereas
-rebuilding the published site is a deliberate act. It is **`workflow_dispatch`
-only**, with a `deploy` checkbox (default on):
+from the Rust CI suite. It **deploys on every push to `main` that touches
+`docs/**` or the workflow file** (Rust-only commits skip it), and can also be
+run by hand via `workflow_dispatch` with a `deploy` checkbox (default on):
 
 - **unchecked** — build only. Checks out with `submodules: recursive`, installs
   pinned Hugo extended (checksum-verified), and runs
@@ -58,7 +58,6 @@ only**, with a `deploy` checkbox (default on):
 - **checked** — the same build with `--baseURL` from `actions/configure-pages`,
   then deploys `docs/public/` to GitHub Pages via `actions/deploy-pages`.
 
-Pages is **not enabled on the repo yet**, so the deploy path will fail until
-Settings → Pages has *Source: GitHub Actions* selected; the build-only path
-works today. The rustdoc API reference (`cargo doc --no-deps -p m0601`) is still
+Pages is enabled with *Source: GitHub Actions*; the site is at
+<https://dougcalobrisi.github.io/m0601-rs/>. The rustdoc API reference (`cargo doc --no-deps -p m0601`) is still
 planned for `/api/` and is not published by this workflow.

@@ -4,9 +4,15 @@ name: Docs site
 # file on the default branch; if `gh workflow run` 404s, push a change to
 # this file to force a re-index.
 
-# Manual dispatch only. The site is published on demand, not on every push:
-# doc content lands continuously, but a live-site rebuild is a deliberate act.
+# Publishes when docs land on main, and on demand. The push trigger is
+# path-filtered so a Rust-only commit does not rebuild the site; a manual
+# run can still be build-only to smoke-test a layout change without shipping.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-site.yml'
   workflow_dispatch:
     inputs:
       deploy:
@@ -65,7 +71,7 @@ jobs:
       # Sets baseURL to the repo's real Pages URL, so the same config works
       # whether or not the site is served from a project sub-path.
       - name: Configure Pages
-        if: inputs.deploy
+        if: github.event_name == 'push' || inputs.deploy
         id: pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
@@ -87,14 +93,14 @@ jobs:
           PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
 
       - name: Upload artifact
-        if: inputs.deploy
+        if: github.event_name == 'push' || inputs.deploy
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: docs/public
 
   deploy:
     name: deploy
-    if: inputs.deploy
+    if: github.event_name == 'push' || inputs.deploy
     needs: build
     runs-on: ubuntu-latest
     environment:
