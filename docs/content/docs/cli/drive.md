@@ -28,7 +28,7 @@ want one command that does one thing and stops itself cleanly.
 
 ```sh
 m0601 drive velocity --rpm -80 --secs 3     # reverse at 80 RPM for 3 s
-m0601 drive velocity --rpm 200 --accel 40   # softer ramp
+m0601 drive velocity --rpm 200 --accel 5    # softer ramp (~3.6 ms/RPM per unit)
 m0601 drive current  --amps 1.5 --secs 2    # hold ~1.5 A of torque
 m0601 drive position --deg 180              # rotate to 180° and hold
 ```
