@@ -130,12 +130,31 @@ fn frame(id: u8, cmd: u8, data: [u8; 7]) -> Frame {
 
 /// Velocity drive frame. `rpm` is clamped to [`RPM_MIN`]`..=`[`RPM_MAX`].
 ///
-/// `accel` sets how steeply the motor ramps toward the setpoint: `1` is the
-/// *fastest* ramp, larger values ramp more gently, and `0` selects the
-/// motor's own default. Only that direction is documented here — the vendor
-/// sources state a unit for this byte ("1 RPM per 0.1 ms") whose sense
-/// contradicts the ramp direction every source agrees on, and it has not
-/// been resolved against hardware. See `PROTOCOL.md`.
+/// `accel` sets how hard the motor ramps toward the setpoint: **larger is
+/// gentler**, and `0` selects the motor's own default — which is the *fastest*
+/// ramp, not a middle one.
+///
+/// No vendor source states that direction; it was measured here
+/// (`accel_direction_capture` in `m0601/tests/hardware.rs`). Stepping an
+/// unloaded wheel from rest to 120 RPM, time to 90% of setpoint was:
+///
+/// | accel | 0 | 1 | 2 | 5 | 20 | 100 | 255 |
+/// |---|---|---|---|---|---|---|---|
+/// | t to 90% | 446 ms | 446 ms | 837 ms | 1.99 s | >3 s | >3 s | >3 s |
+///
+/// Time-to-setpoint is linear in the byte at roughly **3.6 ms per RPM per
+/// unit**, so the byte behaves as a *time per rpm* — the orientation of the
+/// wiki's worked example, not of the `RPM/0.1ms` **rate** its own unit line
+/// and the upstream manual give. Read literally that rate would make larger
+/// values harsher; it does the opposite. `0` and `1` are indistinguishable,
+/// confirming the wiki's "the default value as 1". The ramp's *shape* is
+/// verified too (`accel_curve_capture`): the full spin-up curve is a straight
+/// line to setpoint, not an exponential approach, so "linear" is measured
+/// rather than inferred from summary times.
+///
+/// The magnitude is one unloaded motor on one rig; the ordering is the durable
+/// part. Large values are gentler than they look useful: at `20` the same step
+/// had only reached 41 RPM after three seconds. See `PROTOCOL.md`.
 ///
 /// Only sustains motion while resent at ≥[`DRIVE_HZ_MIN`] Hz.
 ///

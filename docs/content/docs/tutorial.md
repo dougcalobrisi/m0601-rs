@@ -72,12 +72,19 @@ Try reverse and a gentler ramp:
 
 ```sh
 m0601 drive velocity --rpm -80 --secs 3         # the other way
-m0601 drive velocity --rpm 200 --accel 40        # softer acceleration
+m0601 drive velocity --rpm 200 --accel 5         # softer acceleration
 ```
 
-That `--accel 40` matters more than it looks: acceleration `1` (the default) is the
-motor's *fastest* ramp, and a big step at accel 1 on a loaded wheel can spike
-current hard enough to trip the 3 A protection. Larger numbers ramp gentler.
+That `--accel 5` matters more than it looks: acceleration `1` (the default) is the
+motor's *fastest* ramp, and a big step there on a loaded wheel can spike current hard
+enough to trip the 3 A protection. Larger numbers ramp gentler.
+
+Keep the number small, though. The ramp slows quickly — measured, a step to 120 RPM
+takes ~0.45 s at `1`, ~2 s at `5`, and had not arrived after 3 s at `20`. So `3`–`5`
+softens a launch, while `40` is close to a standstill and will look like a broken
+motor. And note `--accel 0` is *not* a safe middle: it selects the motor's default,
+which is the same ramp as `1`
+([why]({{< relref "protocol" >}}#known-contradictions-between-sources)).
 
 ## 5. Take the wheel
 

@@ -17,7 +17,7 @@ entry which owns the full explanation, so nothing is explained twice in two plac
 | Wheel spins briefly, then coasts | Your loop is under 50 Hz, or a query is replacing a drive frame on some cycles. Keep the drive cadence at 20 ms. | [why]({{< relref "faq" >}}#spins-then-stops) |
 | Sent zero, but it moved or didn't brake | You weren't in velocity mode. Use `safe_stop` / the `S` key, which force velocity first. | [why]({{< relref "faq" >}}#zero-didnt-stop) |
 | `control`'s `P` (or `drive position`) refused | Wheel at ≥10 RPM, or no telemetry yet (it fails closed on unknown speed). | [why]({{< relref "faq" >}}#position-refused) |
-| Faults the instant a drive starts | Ramp too steep — accel `1` spikes current past the 3 A protection. Soften with a larger accel byte. Auto-resets in ~5 s. | [why]({{< relref "faq" >}}#fault-on-start) |
+| Faults the instant a drive starts | Ramp too steep — accel `1` (and `0`, the same ramp) spikes current past the 3 A protection. Soften with a larger accel byte; `3`–`5`, not 40. Auto-resets in ~5 s. | [why]({{< relref "faq" >}}#fault-on-start) |
 | Motor ignores drive frames, a fault bit is set | A protection is active (3 A bus / 4.6 A phase / 80 °C / stall). The motor stops responding to drive commands until it clears — ~5 s, or on cooling to 75 °C for overheat. | |
 | `raw` refuses to send my frame | It's a motion command (byte 1 = `0x64` or `0xA0`). Pass `--yes`. | [why]({{< relref "faq" >}}#raw-by-design) |
 | Intermittent garbage / dropouts | Brown wire floating, or missing 120 Ω termination on a cable over ~1 m. | [why]({{< relref "faq" >}}#intermittent) |

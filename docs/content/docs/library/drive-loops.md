@@ -56,12 +56,15 @@ stopped arriving. Worst case, the fail-safe still catches it.
 ## Acceleration
 
 `drive_velocity` uses acceleration `1` by default — which is the motor's *fastest*
-ramp, not a gentle one. On a loaded wheel a large velocity step at accel 1 can draw a
-current spike big enough to trip the 3 A bus-overcurrent protection, which drops the
-wheel until it auto-resets ~5 s later. If you see that, ramp softer. Per call:
+ramp, not a gentle one, and so is `0`, which selects the motor default and
+[measures the same]({{< relref "../protocol" >}}#known-contradictions-between-sources).
+On a loaded wheel a large velocity step at that ramp can draw a current spike big
+enough to trip the 3 A bus-overcurrent protection, which drops the wheel until it
+auto-resets ~5 s later. If you see that, ramp softer — larger is gentler, but keep it
+small: 120 RPM takes ~0.45 s at `1`, ~2 s at `5`, and over 3 s at `20`. Per call:
 
 ```rust
-motor.drive_velocity_accel(200, 40)?;   // larger accel byte = gentler ramp; 0 = motor default
+motor.drive_velocity_accel(200, 5)?;    // larger = gentler; 0 and 1 are the fastest
 ```
 
 Or change the default `drive_velocity` uses, once, so ordinary calls ramp gently — on
@@ -73,10 +76,10 @@ let mut motor = bus.motor(0x01)?.with_default_accel(20);              // just th
 motor.drive_velocity(200)?;   // now uses accel 20; drive_velocity_accel still overrides
 ```
 
-(The vendor docs give this byte a unit that reads like a rate, which contradicts the
-"1 is fastest" direction everyone agrees on. That contradiction is unresolved, so the
-crate documents only the direction — see [the protocol notes]({{< relref
-"../protocol" >}}).)
+(The vendor docs give this byte a unit that reads like a rate, which contradicted the
+"1 is fastest" direction everyone agrees on. Hardware capture settled it: the byte
+scales the ramp at roughly 3.6 ms per RPM per unit — see [contradiction 6 in the
+protocol notes]({{< relref "../protocol" >}}#known-contradictions-between-sources).)
 
 ## Setpoint ramping: `SlewLimiter`
 

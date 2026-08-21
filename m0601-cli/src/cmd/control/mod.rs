@@ -51,11 +51,16 @@ use state::Shared;
 /// apart from it so the two never read as the same number: `drive velocity` and
 /// `drive_velocity` take the library default, `control` takes this one.
 ///
-/// The motor's fastest ramp is `1`, but a keystroke here commands a large instantaneous
-/// step (a jump to the full preset, or an F→B reversal), so the default is
-/// deliberately gentler — in the same spirit as the bus's `SAFE_STOP_ACCEL`
-/// (5) — to keep the current spike under the 3 A bus-overcurrent trip on a
-/// loaded wheel. `0` selects the motor's own default ramp.
+/// Larger is gentler, and `1` is the motor's fastest ramp — as is `0`, which
+/// selects the motor default and measures identical to `1`
+/// (see [`m0601::protocol::frame_velocity`]). A keystroke here commands a large
+/// instantaneous step (a jump to the full preset, or an F→B reversal), so the
+/// default is deliberately gentler — in the same spirit as the bus's
+/// `SAFE_STOP_ACCEL` (5) — to keep the current spike under the 3 A
+/// bus-overcurrent trip on a loaded wheel. It stays small because the ramp
+/// slows quickly: a step to 120 RPM takes ~0.45 s at `1` but ~2 s at `5`, and
+/// an interactive dashboard that took seconds to answer a keypress would be
+/// its own hazard.
 pub const CONTROL_DEFAULT_ACCEL: u8 = 3;
 
 /// Restores the terminal on drop (alt screen, raw mode, cursor). Created

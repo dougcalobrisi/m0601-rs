@@ -2,10 +2,12 @@
 //! touches the bus — and it is the one place [`M0601::safe_stop`] runs, on
 //! every exit path including a panic inside its own loop body.
 //!
-//! The stop ramps to zero followed by the electric brake; `safe_stop` uses
-//! the bus's `stop_accel` (default `SAFE_STOP_ACCEL` = 5, a moderate ramp,
-//! not the motor's fastest) to reduce the chance of tripping overcurrent
-//! mid-stop — it does not sense load, so it can't guarantee no trip.
+//! The stop ramps to zero followed by the electric brake. `safe_stop` sends
+//! the bus's `stop_accel` (default `SAFE_STOP_ACCEL` = 5) on the velocity-0
+//! rounds, though that byte measures inert on deceleration; the rounds
+//! themselves do the work. It does not sense load, so it cannot guarantee the
+//! stop won't trip overcurrent — and on an unloaded capture the *brake*
+//! rounds drew the larger current, not the ramp.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -273,7 +275,9 @@ mod tests {
             active_frame(0x01, &cmd(Mode::Velocity, 100, false), 7)[6],
             7
         );
-        // The default is gentler than the motor's fastest ramp (1).
+        // The default must be gentler than the motor's fastest ramp — which
+        // is 1, and also 0, since 0 selects the motor default and measures
+        // identical to 1. Both ends of that trap have to stay excluded.
         const _: () = assert!(CONTROL_DEFAULT_ACCEL > 1);
         // Non-velocity frames have no accel byte and ignore the parameter.
         assert_eq!(

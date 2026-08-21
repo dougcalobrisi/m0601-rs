@@ -60,9 +60,9 @@ enum Cmd {
         /// Preset speed for F/B keys, -330..=330
         #[arg(long, default_value_t = 100, value_parser = parse_rpm, allow_hyphen_values = true)]
         rpm: i16,
-        /// Velocity ramp: 1 = fastest, larger = gentler, 0 = motor default.
-        /// Default is gentler than 1 so a keystroke's large step is less
-        /// likely to trip the motor's overcurrent protection on a loaded wheel.
+        /// Velocity ramp: larger is gentler; 0 and 1 are both the fastest
+        /// ramp. Default is gentler than that so a keystroke's large step is
+        /// less likely to trip the motor's overcurrent protection.
         #[arg(long, default_value_t = cmd::control::CONTROL_DEFAULT_ACCEL)]
         accel: u8,
     },
@@ -100,7 +100,7 @@ enum DriveMode {
         /// Target speed, -330..=330 RPM
         #[arg(long, value_parser = parse_rpm, allow_hyphen_values = true)]
         rpm: i16,
-        /// Acceleration byte: 1 = fastest ramp, 0 = motor default
+        /// Acceleration byte: larger is gentler; 0 = motor default = fastest
         #[arg(long, default_value_t = 1)]
         accel: u8,
         /// Stop after this many seconds (default: until Ctrl-C)

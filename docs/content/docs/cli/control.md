@@ -23,17 +23,23 @@ up a motor by hand and reacting to what you see. Its non-interactive twin is
 | Flag | Default | Meaning |
 |---|---|---|
 | `--rpm` | `100` | the speed the `F` and `B` keys drive at (−330..330) |
-| `--accel` | `3` | velocity ramp: `1` = fastest, larger = gentler, `0` = motor default |
+| `--accel` | `3` | velocity ramp: larger is gentler; `1` is the fastest ramp and `0` [is the same ramp]({{< relref "../protocol" >}}#known-contradictions-between-sources), not a neutral one |
 
 `--accel` defaults to `3` rather than the motor's fastest `1` on purpose. A keystroke
 here commands a *large instantaneous step* — `F` jumps straight to the full preset,
 and `F` → `B` is a complete reversal — and the sharpest ramp can spike current past
-the 3 A bus-overcurrent trip on a loaded wheel. Pass `--accel 1` if you want the
-snappy response and know the wheel is unloaded.
+the 3 A bus-overcurrent trip on a loaded wheel.
+
+Do not reach for `--accel 0` expecting something gentle: `0` selects the motor's own
+default, which [measures identical to `1`]({{< relref "../protocol" >}}#known-contradictions-between-sources)
+and is therefore the *harshest* setting. Pass `--accel 1` (or `0`) only if you want the
+snappy response and know the wheel is unloaded. The default stays small because the
+ramp slows quickly — a step to 120 RPM takes ~2 s at `5` — and a dashboard that took
+seconds to answer a keypress would be its own hazard.
 
 This is the ramp for *active driving* only. The **stop** ramp is separate: `safe_stop`
-uses the library's own moderate `SAFE_STOP_ACCEL`, and `control` always uses that
-default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
+sends its own `SAFE_STOP_ACCEL` — measured inert on deceleration — and `control` always
+uses that default ([Stopping safely]({{< relref "../concepts/stopping-safely" >}})).
 
 `control` is the one subcommand that ignores `--timeout` completely — it opens the
 port with a fixed 50 ms timeout and its loop uses a fixed 6 ms reply wait, so nothing

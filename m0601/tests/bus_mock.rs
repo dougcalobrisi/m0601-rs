@@ -1106,8 +1106,10 @@ fn a_cloned_bus_is_another_handle_on_the_same_port() {
 
 #[test]
 fn default_bus_timing_matches_the_historical_constants() {
-    // The whole change hinges on defaults being unchanged. Pin the two a
-    // consumer is most likely to read, and that other tests depend on.
+    // Pin the two defaults a consumer is most likely to read, and that other
+    // tests depend on. `stop_accel` is 5 for historical continuity only:
+    // measured on hardware, the byte is inert on deceleration (0 and 255
+    // hand over at the same RPM), so the value is pinned, not load-bearing.
     let t = BusTiming::default();
     assert_eq!(t.stop_accel, 5, "stop ramp default must stay 5");
     let bus = Bus::with_transport(MockTransport::default(), TIMEOUT);

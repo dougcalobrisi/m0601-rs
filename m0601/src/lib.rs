@@ -49,8 +49,10 @@
 //! - `CMD` is `0x64` (drive), `0x74` (feedback query) or `0xA0` (mode
 //!   switch). **For `0xA0` the last byte is the mode (`01`/`02`/`03`), not
 //!   a CRC.**
-//! - `ACCEL` sets ramp steepness: `1` is the fastest ramp, larger values
-//!   are gentler, `0` selects the motor default.
+//! - `ACCEL` sets ramp steepness: larger is gentler, and `0` selects the
+//!   motor default — which measures identical to `1`, the *fastest* ramp.
+//!   No vendor source states that direction; see
+//!   [`protocol::frame_velocity`] for the measurement.
 //! - `BRAKE` = `0xFF` engages the electric brake (velocity mode only).
 //! - Two special unaddressed frames exist: the broadcast ID query
 //!   (`C8 64 00×7 DE`) and set-ID (`AA 55 53 <id> 00×6`, no CRC, must be
@@ -165,9 +167,13 @@
 //!
 //! [protocol reference]: https://github.com/dougcalobrisi/m0601-rs/blob/main/docs/content/docs/protocol.md
 //!
+//! - [DDT M0601C_111 manual (PDF)](https://d2air1d4eqhwg2.cloudfront.net/media/files/a48110eb-432c-4083-a159-9e0f35913b23.pdf)
+//!   — the manufacturer's 16-page datasheet (the M0601 is a rebadged DDT
+//!   M0601C-111)
+//! - [DDTRobot/motor-driver-examples](https://github.com/DDTRobot/motor-driver-examples)
+//!   — the manufacturer's own sample code
 //! - [DFRobot FIT1042 protocol wiki](https://wiki.dfrobot.com/fit1042/docs/23322)
-//! - [DDT M0601C-111 vendor sample](https://github.com/tech-life-hacking/DDT_M0601C_111)
-//!   (the M0601 is a rebadged DDT M0601C-111)
+//! - [DDT_M0601C_111, third-party samples](https://github.com/tech-life-hacking/DDT_M0601C_111)
 //! - [navigation_robot, independent C driver](https://github.com/Il1yasviel/navigation_robot)
 //! - [MotorLink, independent implementation](https://github.com/MukeshSankhla/MotorLink)
 

@@ -194,9 +194,14 @@ impl Config {
     }
 
     /// The library [`m0601::BusTiming`] this config asks for: the enforced
-    /// idle gap plus a controlled-stop ramp that matches the configured launch
-    /// accel (`limits.accel`), so a wheel decelerates on the same ramp it
-    /// launches on. Everything else keeps the library defaults.
+    /// idle gap plus a stop ramp taken from the configured launch accel
+    /// (`limits.accel`), so the two are configured in one place.
+    ///
+    /// The stop half of that is very likely a no-op: the accel byte measures
+    /// inert on deceleration (see `m0601::BusTiming::stop_accel`). It is
+    /// wired up anyway so a rig that *does* respond to it is configured
+    /// correctly, but do not expect `limits.accel` to change how this vehicle
+    /// stops. Everything else keeps the library defaults.
     pub fn bus_timing(&self) -> m0601::BusTiming {
         m0601::BusTiming {
             min_gap: self.min_gap(),
@@ -304,12 +309,17 @@ impl Config {
                 m0601::protocol::RPM_MAX
             ));
         }
-        if self.limits.accel == 1 {
-            r.warnings.push(
-                "limits.accel = 1 is the motor's FASTEST ramp; a loaded launch can trip \
-                 the 3 A bus-overcurrent protection. Use 5 unless measured otherwise"
-                    .into(),
-            );
+        // Both 0 and 1 are the motor's FASTEST ramp: 0 selects the motor
+        // default, and that default measures identical to 1 on hardware. A
+        // check that caught only 1 would wave through the same ramp spelled 0.
+        if self.limits.accel <= 1 {
+            r.warnings.push(format!(
+                "limits.accel = {} is the motor's FASTEST ramp (0 selects the motor \
+                 default, which measures the same as 1); a loaded launch on four \
+                 wheels off one supply can trip the 3 A bus-overcurrent protection. \
+                 Use 5 unless measured otherwise",
+                self.limits.accel
+            ));
         }
         if self.limits.ramp_rpm_per_s <= 0.0 {
             e.push(format!(
@@ -407,7 +417,8 @@ mod tests {
         let t = cfg.bus_timing();
         assert_eq!(
             t.stop_accel, cfg.limits.accel,
-            "the stop ramp must track the configured launch accel"
+            "the stop ramp must track the configured launch accel — even though \
+             the byte measures inert on deceleration, the wiring must be right"
         );
         assert_eq!(t.min_gap, cfg.min_gap());
         // Everything else keeps the library default.
@@ -522,11 +533,27 @@ mod tests {
     }
 
     #[test]
-    fn accel_1_warns_but_does_not_refuse() {
-        let text = SHIPPED.replace("accel = 5", "accel = 1");
-        let report = parsed(&text).validate();
-        assert!(report.errors.is_empty());
-        assert!(report.warnings.iter().any(|w| w.contains("accel")));
+    fn the_fastest_ramps_warn_but_do_not_refuse() {
+        // 0 and 1 are the same ramp — the motor's fastest — so both must
+        // warn. Warning on 1 alone would let the identical setting through
+        // under the spelling that looks most innocent.
+        for fastest in ["accel = 0", "accel = 1"] {
+            let text = SHIPPED.replace("accel = 5", fastest);
+            let report = parsed(&text).validate();
+            assert!(report.errors.is_empty(), "{fastest}: {:#?}", report.errors);
+            assert!(
+                report.warnings.iter().any(|w| w.contains("accel")),
+                "{fastest}: {:#?}",
+                report.warnings
+            );
+        }
+        // The shipped `accel = 5` is the moderate ramp — no accel warning.
+        let report = parsed(SHIPPED).validate();
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("accel")),
+            "{:#?}",
+            report.warnings
+        );
     }
 
     #[test]

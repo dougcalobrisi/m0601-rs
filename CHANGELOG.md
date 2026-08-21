@@ -9,7 +9,97 @@ lockstep; `m0601-quad` is a sample and is not published.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The acceleration byte's ramp direction is now measured rather than asserted.** The
+  docs claimed that "every source, the wiki included," says `1` is the fastest ramp and
+  larger values are gentler. **No source says that** — the direction is stated nowhere
+  in the DFRobot wiki, the upstream DDT manual, the product pages, or any of eight
+  independent implementations. The claim happened to be correct, but nothing backed it
+  ([#2](https://github.com/dougcalobrisi/m0601-rs/issues/2)).
+
+  It is now backed. `accel_direction_capture` (`m0601/tests/hardware.rs`, `#[ignore]`d
+  like the other hardware-in-the-loop tests) sweeps the byte against a real motor and
+  reports time-to-setpoint and peak current. Stepping an unloaded wheel from rest to
+  120 RPM, time to 90% of setpoint was 446 ms at accel `1`, 837 ms at `2`, 1.99 s at
+  `5`, and over 3 s at `20`, `100` and `255`. Two runs agreed to within 10 ms.
+  `docs/content/docs/protocol.md` records the table, and contradiction 6 moves from
+  *unresolved* to *resolved by capture*.
+
+- **The ramp's shape is verified linear, not just monotonic.** Time-to-90% alone could
+  not distinguish a linear ramp from a first-order lag, so the "~3.6 ms per RPM per
+  unit" law was an interpretation. `accel_curve_capture` dumps the full spin-up curve
+  at accel `5` and `20`: quartile-span ratios 0.98–1.02 where an exponential approach
+  would give 1.71, under 0.5% deviation from a straight chord, and the same
+  3.5–3.6 ms/RPM/unit slope at both values, across two runs. The published law now
+  rests on a measured shape.
+
+- **The manufacturer's own manual was found, and the docs now cite it.** Direct Drive
+  Tech publishes `M0601C_111 Motor Driver Instructions`, a 16-page PDF with selectable
+  text, linked only from a third-party repo's README — the docs used to claim no
+  official PDF exists. It resolves the open spec conflicts (no-load current ≤ 0.25 A,
+  mounting thread depth 5 mm, 18 V rated with a 24 V DC maximum input), confirms fault
+  BIT4 is "Over heat" (MotorLink's "Troubleshoot" label is wrong), and makes the
+  set-ID frame's 5× repetition load-bearing rather than cautious ("The ID will be
+  changed after 5 times repeating"). The protocol page's source hierarchy is reordered
+  accordingly: the third-party repo previously called "authoritative where sources
+  disagree" is not a vendor publication.
+
+- **`0` is documented as the fastest ramp, not a neutral default.** The same capture
+  shows `0` and `1` are indistinguishable (446 ms both), confirming the wiki's "the
+  default value as 1". Nothing previously said so, and the natural reading of "`0` =
+  motor default" is that it is something middling — it is in fact the steepest ramp
+  available. Every place that offers the byte now says this.
+
+- **`m0601-quad` warns on `limits.accel = 0` as well as `1`.** It previously warned only
+  on `1`, waving through the identical ramp spelled `0`.
+
+- **The docs no longer recommend `--accel 40` as "softer acceleration".** At `40` a step
+  to 120 RPM takes longer than the tutorial's own 3-second drive, so the example read as
+  a motor that never spun up. The useful softening range is `3`–`5`; the tutorial, FAQ,
+  troubleshooting table and CLI pages now say so and give the measured timings.
+
+- **`BusTiming::stop_accel` is documented as inert.** `stop_ramp_capture`
+  (`m0601/tests/hardware.rs`) sweeps the byte across the velocity-0 rounds of a stop:
+  an unloaded wheel stopping from 120 RPM sits at 63 RPM after 100 ms at accel `0` and
+  64 RPM at accel `255`, and `stop_ramp_curve_capture` shows the full deceleration
+  curves at `1` and `255` matching sample for sample. The accel byte shapes
+  acceleration only. Docs that promised a gentler stop ramp — `SAFE_STOP_ACCEL`,
+  `Bus::with_stop_accel`, `concepts/stopping-safely.md`, the README — now say so. The
+  field is kept and still sent, since the measurement is one motor on one firmware.
+
+- **The stop's current is documented on the right phase, and as invisible.** The docs
+  said a hard velocity-0 ramp risks the 3 A bus-overcurrent trip mid-stop.
+  `braking_current_capture` logs current *signed* through each phase of a stop on an
+  unloaded wheel: the velocity-0 rounds show one −0.63 A transient at the setpoint
+  change and then average **0.03 A** while the wheel sheds 60 RPM, while the brake
+  rounds show a −1.99 A transient followed by 0.6–0.85 A sustained.
+
+  So a velocity-0 stop is effectively invisible to any monitor watching reported
+  current — including `m0601-quad`'s `limits.current_trip_a`. Documented in
+  `concepts/stopping-safely.md` and on `SAFE_STOP_ACCEL`, so low current during a stop
+  is not read as an idle wheel.
+
+  Deliberately **not** claimed: that little energy crosses the bus.
+  `braking_current_fast_capture` shows the brake transient reading 1.99 A or 2.28 A
+  depending on which samples land on it, so it is being aliased — and telemetry here
+  cannot sample faster than ~8 ms, since the ceiling is the USB-serial quantum rather
+  than the crate's pacing (tightening the reply window past ~1.1 ms loses replies
+  outright, which incidentally measures motor turnaround at >1.1 ms). The figures
+  describe what the current field reports, which is what a monitor sees.
+
+  The velocity-0 rounds are still worth their 100 ms: they shed nearly half the speed
+  (120 → ~64 RPM) where coasting sheds essentially none (120 → 119 RPM). Where that
+  energy goes is not established: the protocol exposes no phase current, and a thermal
+  probe on an unloaded wheel could not separate braking heat from the spin-up preceding
+  it.
+
+### Changed
+
+- Nothing in the wire format or public API. `BusTiming::stop_accel` (`5`), the `control`
+  CLI's `--accel` (`3`), `DEFAULT_DRIVE_ACCEL` (`1`) and `m0601-quad`'s shipped
+  `limits.accel` (`5`) all keep the values they have always had — the measurement
+  confirms they were on the right side of the ramp.
 
 ## [0.1.0] — 2026-08-18
 
