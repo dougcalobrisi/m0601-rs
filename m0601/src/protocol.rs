@@ -731,10 +731,11 @@ pub(crate) fn strip_echo<'a>(tx: &[u8], rx: &'a [u8]) -> &'a [u8] {
 /// alone, or the echo plus the reply — so anything else means the stream is
 /// misaligned and none of it can be trusted. Rejecting on that costs at most
 /// one dropped reading, which every caller already tolerates.
-pub(crate) fn frames<'a>(tx: &[u8], rx: &'a [u8]) -> Option<std::slice::ChunksExact<'a, u8>> {
+pub(crate) fn frames<'a>(tx: &[u8], rx: &'a [u8]) -> Option<std::slice::Iter<'a, Frame>> {
     let rx = strip_echo(tx, rx);
-    if rx.is_empty() || !rx.len().is_multiple_of(FRAME_LEN) {
+    let (whole, remainder) = rx.as_chunks::<FRAME_LEN>();
+    if whole.is_empty() || !remainder.is_empty() {
         return None;
     }
-    Some(rx.chunks_exact(FRAME_LEN))
+    Some(whole.iter())
 }
