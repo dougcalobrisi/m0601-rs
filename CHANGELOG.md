@@ -9,6 +9,10 @@ lockstep; `m0601-quad` is a sample and is not published.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] — 2026-08-21
+
 ### Fixed
 
 - **The acceleration byte's ramp direction is now measured rather than asserted.** The
@@ -264,5 +268,6 @@ panic-free lint discipline — held up; these address what the review did surfac
   `USAGE.md`, where no reader is sent any more.
 
 
-[Unreleased]: https://github.com/dougcalobrisi/m0601-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dougcalobrisi/m0601-rs/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dougcalobrisi/m0601-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dougcalobrisi/m0601-rs/releases/tag/v0.1.0
