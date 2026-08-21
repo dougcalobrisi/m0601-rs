@@ -741,7 +741,7 @@ fn stop_ramp_curve_capture() {
     // Pair samples by elapsed time, not by index: one dropped reply would
     // shift every later index by a full sample period and silently compare
     // different instants. Each accel-`a` sample is read against the accel-`b`
-    // sample nearest in time, and pairs further apart than half a sample
+    // sample nearest in time, and pairs further apart than a full sample
     // period are skipped rather than compared.
     let mut worst: i16 = 0;
     let mut paired: usize = 0;
