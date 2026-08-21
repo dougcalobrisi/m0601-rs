@@ -287,13 +287,13 @@ fn accel_direction_capture() {
         // the same place. safe_stop brakes; give the wheel time to settle.
         m.safe_stop();
         std::thread::sleep(Duration::from_millis(800));
-        if let Ok(Some(fb)) = m.query() {
-            assert!(
-                fb.speed_rpm.abs() < 10,
-                "wheel did not come to rest before the accel {accel} trial: {} RPM",
-                fb.speed_rpm
-            );
-        }
+        // A dropped reply must not let the trial start against a spinning
+        // wheel, so retry the query and fail outright if it never answers.
+        let rest_rpm = query_with_retry(m).expect("no reply to the at-rest check");
+        assert!(
+            rest_rpm.abs() < 10,
+            "wheel did not come to rest before the accel {accel} trial: {rest_rpm} RPM"
+        );
         // safe_stop leaves the brake engaged; re-establish velocity mode and
         // release it with one zero-velocity, brake-off frame before the step,
         // or the ramp would be measured against a held wheel.
@@ -473,9 +473,6 @@ fn stop_ramp_capture() {
     const STOP_CAP: Duration = Duration::from_millis(6000);
     const SAMPLE_GAP: Duration = Duration::from_millis(5);
     const REPLY_WAIT: Duration = Duration::from_millis(4);
-    /// Accel for the spin-*up* before each trial, so every trial starts from
-    /// the same place. The fastest ramp, to keep the spin-up short.
-    const SPINUP_ACCEL: u8 = 1;
 
     let target = test_rpm();
 
@@ -498,27 +495,11 @@ fn stop_ramp_capture() {
     for style in TRIALS {
         // ── spin up ──────────────────────────────────────────────────────
         m.set_mode(Mode::Velocity).expect("set velocity mode");
-        let up = m0601::protocol::frame_velocity(m.id(), target, SPINUP_ACCEL);
-        let want = f32::from(target) * 0.9;
-        let spin_deadline = Instant::now() + Duration::from_millis(2500);
-        let mut at_speed: Option<Instant> = None;
-        while Instant::now() < spin_deadline {
-            if let Ok(Some(fb)) = m.transact(&up, REPLY_WAIT)
-                && at_speed.is_none()
-                && f32::from(fb.speed_rpm) >= want
-            {
-                at_speed = Some(Instant::now());
-            }
-            // Hold briefly at speed so every trial decelerates from a settled
-            // wheel rather than from one still accelerating.
-            if at_speed.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
-                break;
-            }
-            std::thread::sleep(SAMPLE_GAP);
-        }
+        // Hold briefly at speed so every trial decelerates from a settled
+        // wheel rather than from one still accelerating.
         assert!(
-            at_speed.is_some(),
-            "wheel never reached {want:.0} RPM before the {} trial",
+            spin_up_to(m, target, Duration::from_millis(400)),
+            "wheel never reached 90% of {target} RPM before the {} trial",
             style.label()
         );
 
@@ -586,10 +567,10 @@ fn stop_ramp_capture() {
     //   1. Do velocity-0 frames decelerate at all? (ramp vs COAST)
     //   2. Does `stop_accel` change that deceleration? (ramp vs ramp)
     // Only (2) is what the `stop_accel` knob claims to do.
-    let handover_of = |want: &str| {
+    let handover_of = |want: StopStyle| {
         results
             .iter()
-            .find(|(s, ..)| s.label() == want)
+            .find(|(s, ..)| std::mem::discriminant(s) == std::mem::discriminant(&want))
             .and_then(|(_, h, _)| *h)
     };
     let ramps: Vec<(u8, i16)> = results
@@ -601,7 +582,9 @@ fn stop_ramp_capture() {
         .collect();
 
     eprintln!();
-    if let (Some(coast), Some(brake)) = (handover_of("coast (no frames)"), handover_of("brake")) {
+    if let (Some(coast), Some(brake)) =
+        (handover_of(StopStyle::Coast), handover_of(StopStyle::Brake))
+    {
         eprintln!(
             "Q1 — do velocity-0 frames decelerate at all? Coasting leaves {coast} RPM at \
              the handover and the brake leaves {brake} RPM."
@@ -699,24 +682,8 @@ fn stop_ramp_curve_capture() {
 
     for accel in PROBES {
         m.set_mode(Mode::Velocity).expect("set velocity mode");
-        let up = m0601::protocol::frame_velocity(m.id(), target, 1);
-        let want = f32::from(target) * 0.9;
-        let spin_deadline = Instant::now() + Duration::from_millis(2500);
-        let mut at_speed: Option<Instant> = None;
-        while Instant::now() < spin_deadline {
-            if let Ok(Some(fb)) = m.transact(&up, REPLY_WAIT)
-                && at_speed.is_none()
-                && f32::from(fb.speed_rpm) >= want
-            {
-                at_speed = Some(Instant::now());
-            }
-            if at_speed.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
-                break;
-            }
-            std::thread::sleep(SAMPLE_GAP);
-        }
         assert!(
-            at_speed.is_some(),
+            spin_up_to(m, target, Duration::from_millis(400)),
             "wheel never reached speed for accel {accel}"
         );
 
@@ -877,13 +844,13 @@ fn accel_curve_capture() {
         // same preamble as accel_direction_capture, for the same reason.
         m.safe_stop();
         std::thread::sleep(Duration::from_millis(800));
-        if let Ok(Some(fb)) = m.query() {
-            assert!(
-                fb.speed_rpm.abs() < 5,
-                "wheel did not come to rest before the accel {accel} trial: {} RPM",
-                fb.speed_rpm
-            );
-        }
+        // A dropped reply must not let the trial start against a spinning
+        // wheel, so retry the query and fail outright if it never answers.
+        let rest_rpm = query_with_retry(m).expect("no reply to the at-rest check");
+        assert!(
+            rest_rpm.abs() < 5,
+            "wheel did not come to rest before the accel {accel} trial: {rest_rpm} RPM"
+        );
         m.set_mode(Mode::Velocity).expect("set velocity mode");
         let release = m0601::protocol::frame_velocity(m.id(), 0, accel);
         let _ = m.transact(&release, REPLY_WAIT);
@@ -1053,6 +1020,18 @@ fn spin_up_to(m: &mut M0601, target: i16, hold: Duration) -> bool {
     false
 }
 
+/// Query the wheel's speed, retrying a few times so one dropped reply — a
+/// known failure mode on this link — does not pass for an answer.
+fn query_with_retry(m: &mut M0601) -> Option<i16> {
+    for _ in 0..5 {
+        if let Ok(Some(fb)) = m.query() {
+            return Some(fb.speed_rpm);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
 /// Winding temperature, which only a `0x74` query reply carries.
 fn winding_temp(m: &mut M0601) -> Option<u8> {
     m.query().ok().flatten().and_then(|fb| fb.temp_c)
@@ -1076,8 +1055,10 @@ fn winding_temp(m: &mut M0601) -> Option<u8> {
 ///
 /// Part A logs signed current and fault bits through steady running, a
 /// velocity-0 stop, and a brake stop. Part B is a thermal probe: equal numbers
-/// of spin-ups, differing only in how the wheel returns to rest (braked vs
-/// coasting), to see whether braking heats the motor measurably. Part B is
+/// of spin-ups, differing only in how the wheel returns to rest (velocity-0
+/// stop vs coasting — the velocity-0 path is the one whose energy is
+/// unaccounted for, not the electric brake), to see whether it heats the
+/// motor measurably. Part B is
 /// expected to be inconclusive — the temperature field is 1 °C granular — so
 /// treat a null result there as "too small to see", not as evidence of
 /// absence.
@@ -1206,11 +1187,13 @@ fn braking_current_capture() {
     // ── Part B: thermal probe ────────────────────────────────────────────
     //
     // Both trials perform the SAME number of spin-ups, so spin-up heating
-    // cancels. They differ only in how the wheel returns to rest. If braking
-    // heats the motor, the braked trial should end hotter.
+    // cancels. They differ only in how the wheel returns to rest: velocity-0
+    // frames (accel 5, the quad's default — NOT frame_brake, which Part A
+    // already shows drawing visible current) versus coasting. If the velocity-0
+    // stop heats the motor, that trial should end hotter.
     eprintln!("\n== Part B: thermal probe ({CYCLES} cycles each) ==\n");
 
-    let thermal = |m: &mut M0601, braked: bool| -> (Option<u8>, Option<u8>, f64, usize) {
+    let thermal = |m: &mut M0601, vel0_stop: bool| -> (Option<u8>, Option<u8>, f64, usize) {
         let before = winding_temp(m);
         let t0 = Instant::now();
         // Completed cycles are counted and reported: a failed spin-up shortens
@@ -1223,7 +1206,7 @@ fn braking_current_capture() {
                 break;
             }
             completed += 1;
-            if braked {
+            if vel0_stop {
                 let zero = m0601::protocol::frame_velocity(m.id(), 0, 5);
                 let start = Instant::now();
                 while start.elapsed() < Duration::from_millis(1200) {
@@ -1236,7 +1219,7 @@ fn braking_current_capture() {
                 }
             } else {
                 // Coast: send nothing that drives. Poll only, so the wheel
-                // slows on its own — the control for "same spin-ups, no brake".
+                // slows on its own — the control for "same spin-ups, no stop frames".
                 let start = Instant::now();
                 while start.elapsed() < COAST_CAP {
                     if let Ok(Some(fb)) = m.query_with(REPLY_WAIT)
@@ -1255,7 +1238,7 @@ fn braking_current_capture() {
 
     let (b0, b1, b_secs, b_cycles) = thermal(m, true);
     eprintln!(
-        "braked  : {} -> {} °C over {b_secs:.0} s ({b_cycles}/{CYCLES} cycles)",
+        "vel-0   : {} -> {} °C over {b_secs:.0} s ({b_cycles}/{CYCLES} cycles)",
         b0.map_or("?".into(), |t| t.to_string()),
         b1.map_or("?".into(), |t| t.to_string()),
     );
@@ -1318,7 +1301,7 @@ fn braking_current_capture() {
     match (b0, b1, c0, c1) {
         (Some(b0), Some(b1), Some(c0), Some(c1)) => {
             let (db, dc) = (i16::from(b1) - i16::from(b0), i16::from(c1) - i16::from(c0));
-            eprintln!("\nThermal: braked ΔT {db:+} °C, coasting ΔT {dc:+} °C.");
+            eprintln!("\nThermal: velocity-0 stop ΔT {db:+} °C, coasting ΔT {dc:+} °C.");
             if (db - dc).abs() <= 1 {
                 eprintln!(
                     "    INCONCLUSIVE, as expected: the difference is within the 1 °C \
@@ -1326,7 +1309,7 @@ fn braking_current_capture() {
                 );
                 eprintln!(
                     "    The control is also weaker than it looks: the two trials take \
-                     very different wall-clock ({b_secs:.0} s braked vs {c_secs:.0} s \
+                     very different wall-clock ({b_secs:.0} s velocity-0 vs {c_secs:.0} s \
                      coasting, since a coast to rest takes seconds), so they differ in \
                      idle time and ambient drift as well as in braking. Reading any \
                      1 °C difference as signal would be wrong. Resolving this properly \
@@ -1334,7 +1317,7 @@ fn braking_current_capture() {
                 );
             } else if db > dc {
                 eprintln!(
-                    "    Braking heats the winding {} °C more than coasting for the same \
+                    "    The velocity-0 stop heats the winding {} °C more than coasting for the same \
                      number of spin-ups. The trials also differ in duration, so confirm \
                      that before drawing any conclusion from it.",
                     db - dc

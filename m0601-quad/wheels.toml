@@ -42,8 +42,11 @@ accel = 5              # NEVER 0 or 1 on a vehicle: both are the motor's
                        # slows fast — measured, 120 RPM takes ~0.45 s at 1,
                        # ~2 s at 5, and >3 s at 20. Raise it if launches
                        # still trip; past ~10 the rover crawls.
-ramp_rpm_per_s = 300.0 # host-side setpoint ramp — the observable, testable
-                       # ramp. All-stop and fault stops BYPASS it.
+ramp_rpm_per_s = 300.0 # host-side setpoint ramp, applied in series with
+                       # `accel` above. With accel = 5 the motor's own ramp
+                       # (~60 RPM/s) is the slower one and dominates; this
+                       # value only bites when set below that. All-stop and
+                       # fault stops BYPASS it.
 current_trip_a = 2.5   # monitor trip, debounced below — not a command clamp.
                        # Blind to a velocity-0 stop: that phase reports ~0.03 A
                        # while shedding real speed. The brake transient hits

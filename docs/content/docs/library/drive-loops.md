@@ -76,10 +76,10 @@ let mut motor = bus.motor(0x01)?.with_default_accel(20);              // just th
 motor.drive_velocity(200)?;   // now uses accel 20; drive_velocity_accel still overrides
 ```
 
-(The vendor docs give this byte a unit that reads like a rate, which contradicts the
-"1 is fastest" direction everyone agrees on. That contradiction is unresolved, so the
-crate documents only the direction — see [the protocol notes]({{< relref
-"../protocol" >}}).)
+(The vendor docs give this byte a unit that reads like a rate, which contradicted the
+"1 is fastest" direction everyone agrees on. Hardware capture settled it: the byte
+scales the ramp at roughly 3.6 ms per RPM per unit — see [contradiction 6 in the
+protocol notes]({{< relref "../protocol" >}}#known-contradictions-between-sources).)
 
 ## Setpoint ramping: `SlewLimiter`
 
